@@ -1,0 +1,95 @@
+warning: no usable GPU found, --gpu-layers option will be ignored
+warning: one possible reason is that llama.cpp was compiled without GPU support
+warning: consult docs/build.md for compilation instructions
+
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b10110-8f5ab832c
+model      : /home/dilusha/llm-research/models/Qwen/Qwen3.5-0.8B-GGUF/Qwen3.5-0.8B-Q8_0.gguf
+ftype      : Q8_0
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> Summarize the following technical document. Focus on the experimental design, measurement methodology, limitations, and reproducibility implications.
+
+Technical document:
+
+Large language model inference on consumer hardware is constrained by a combination of memory capacity, memory bandwidth, compute throughput, software backend maturity, and workload shape. Unlike training, inference is often dominated by repeated matrix-vector operations during autoregressive decoding. During prompt processing ... (truncated)
+Based on the provided technical document, here is a summary of the experimental design, methodology, limitations, and reproducibility implications for consumer hardware Large Language Model (LLM) inference benchmarks.
+
+### 1. Experimental Design
+The design emphasizes separating **prompt processing** (autoregressive decoding) from **decode throughput** (sequential token generation) due to the hardware limitations of consumer GPUs. Unlike training, inference is dominated by memory-bound operations during decoding, making parallel prompt evaluation and sequential decoding evaluation distinct metrics.
+
+*   **Workload Variety:** The framework must handle diverse patterns:
+    *   **Chat:** Explaining responses or coding.
+    *   **Summarization:** Long prompts stressing cache allocation.
+    *   **Batch:** Unrelated grouped questions.
+    *   **Agentic:** Simulating planning and review without external tools.
+    *   **Fixed Prompts:** Essential for controlling tokenization and generation behavior.
+*   **Workload Characteristics:** Workloads must reflect real-world constraints:
+    *   **Long context:** Stresses prompt processing and cache usage.
+    *   **Batched inputs:** Tests instruction separation and model state across tasks.
+    *   **Thermal sensitivity:** Must account for dynamic power management, temperature, and thermal throttling.
+
+### 2. Measurement Methodology
+*   **Separation of Metrics:** Crucially, **prompt evaluation throughput** (tokens per second) and **decode throughput** (tokens per second) must be measured separately as they are dominated by different hardware operations.
+*   **Hardware Metadata:** A comprehensive label (e.g., `cpu/ryzen5600`) must capture:
+    *   **Hardware:** Model, backend (CPU/CUDA/Vulkan), VRAM, driver version.
+    *   **Runtime:** OS, CPU/ROM model, RAM capacity, core/thread count, power limits.
+    *   **Environment:** Build options, specific GPU layers offloaded.
+*   **Raw Output Preservation:** The runner must preserve the full `stdout` and `stderr` stream in a result file.
+*   **Sampling and Stopping:**
+    *   **Sampling:** Enabled only when explicitly requested to ensure deterministic results.
+    *   **Fixed Limits:** Generations should be capped to avoid varying sampling behaviors affecting throughput metrics.
+    *   **Throttling:** Background applications must be closed; power settings must be locked to simulate realistic consumer conditions.
+
+### 3. Reproducibility and Validation
+*   **Configuration Control:** The experiment tuple must include all variables (model, backend, label, context length, generation length, temperature, GPU layers, build, driver). **Any change to this tuple invalidates the result**, requiring a clear explanation.
+*   **Metadata Storage:**
+    *   **Success/Failure:** Failures are recorded; only successful runs should be plotted to avoid "survivorship bias."
+    *   **Timestamps:** All metadata must include a timestamp.
+*   **Metadata vs. Raw Artifacts:**
+    *   **Raw files:** The primary source for exact execution logs.
+    *   **Metadata:** Records configuration and status (e.g., success/failure, error messages).
+    *   **Processed CSV:** A secondary artifact for quick analysis, derived from raw data, which should not replace the raw run file.
+*   **Thermal Monitoring:** System-level metrics (CPU, RAM, GPU Power, Temperature) must be sampled and logged. Missing values should be recorded as `null`.
+
+### 4. Key Technical Limitations & Considerations
+*   **Hardware Dependency:** Performance on consumer hardware is heavily dependent on **GPU architecture**, **VRAM capacity**, and **driver stability**. Older CPUs or specific VRAM sizes can degrade performance significantly.
+*   **Model Quality vs. Throughput:** Lower precision quantization (e.g., Q4) improves throughput but may reduce output quality. Throughput alone is not a valid measure of model quality.
+*   **Context Length Trade-offs:** Increasing context length often degrades decode throughput due to cache growth, whereas higher precision might save memory.
+*   **Thermal Instability:** Hardware behavior (boost, idle power, temperature) can cause throughput to fluctuate significantly between runs.
+
+### 5. Proposed Framework Structure
+To achieve the stated goals (separation, robustness, and transparency), the framework should:
+1.  Be **simple, inspectable, and robust**.
+2.  Maintain a **deterministic, versioned prompt** and **resolved model path**.
+3.  Use **fixed generation limits** and **sampling only when necessary** to ensure reproducibility.
+4.  Use **Shell scripts** for invocation and **Python** for parsing structured data (CSV/JSON).
+5.  Avoid complex orchestration frameworks that obscure the traceability of results.
+6.  Report **statistical confidence** explicitly (e.g., number of repetitions, median/mean methods) rather than relying on a single run.
+
+### 6. Conclusion
+The proposed approach prioritizes **researcher autonomy** by allowing users to define their own hardware constraints and workloads while ensuring strict reproducibility through full metadata tracking and raw output preservation. By strictly separating prompt and decode throughput metrics and acknowledging hardware variability, the framework moves beyond simple throughput tests to provide a transparent, auditable, and realistic representation of consumer-level LLM inference.
+
+[ Prompt: 71.0 t/s | Generation: 17.6 t/s ]
+
+
+Exiting...

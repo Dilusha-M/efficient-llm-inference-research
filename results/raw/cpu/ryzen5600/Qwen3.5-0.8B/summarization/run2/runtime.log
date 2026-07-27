@@ -1,0 +1,74 @@
+warning: no usable GPU found, --gpu-layers option will be ignored
+warning: one possible reason is that llama.cpp was compiled without GPU support
+warning: consult docs/build.md for compilation instructions
+
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b10110-8f5ab832c
+model      : /home/dilusha/llm-research/models/Qwen/Qwen3.5-0.8B-GGUF/Qwen3.5-0.8B-Q8_0.gguf
+ftype      : Q8_0
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> Summarize the following technical document. Focus on the experimental design, measurement methodology, limitations, and reproducibility implications.
+
+Technical document:
+
+Large language model inference on consumer hardware is constrained by a combination of memory capacity, memory bandwidth, compute throughput, software backend maturity, and workload shape. Unlike training, inference is often dominated by repeated matrix-vector operations during autoregressive decoding. During prompt processing ... (truncated)
+Here is a summary of the provided technical document, structured by the requested categories:
+
+### 1. Experimental Design
+*   **Inference Pattern:** The design distinguishes between **prompt processing** (reversible, tokenized) and **decode processing** (sequential, irreversible). Prompt throughput and decode throughput must be measured separately to capture the full computational cost.
+*   **Workload Variability:** Workloads must vary to avoid overgeneralization. Examples include general chat, coding, summarization, batch tasks, and agent planning. Fixed prompts should be used to isolate prompt-specific performance.
+*   **Hardware Constraints:** The design acknowledges that consumer hardware (memory bandwidth, compute, VRAM) limits performance. It explicitly tests **CPU-only**, **GPU-only**, and **multi-GPU** configurations to isolate hardware limitations.
+*   **Configuration State:** The experiment treats all parameters as variables: model file, backend, hardware label, context length, generation length, temperature, GPU layer count, build version, and driver environment.
+
+### 2. Measurement Methodology
+*   **Separation of Metrics:** Critical insight is to measure **prompt evaluation time** and **decode time** separately.
+*   **Hardware Monitoring:**
+    *   **GPU:** Uses `nvidia-smi` for power, temperature, memory usage, and utilization.
+    *   **CPU/RAM:** Uses standard Linux tools (`/proc/stat`, `uptime`, `memory info`) to capture thread counts, cores, and RAM capacity.
+*   **Output Handling:** The runner must capture the **full stdout/stderr stream** of `llama.cpp` to preserve the raw output for manual inspection and parser validation.
+*   **Sampling vs. Determinism:** A minimum of **three runs** is recommended per condition to detect instability (thermal throttling, power spikes, driver versions). Random sampling is noted as a potential issue; deterministic settings or fixed generation limits are preferred for accuracy.
+*   **Data Types:** Raw outputs are the primary source of truth. Processed CSV is secondary and should be regenerated from raw data whenever parser logic changes.
+
+### 3. Limitations & Reproducibility Implications
+*   **Thermal & Power Instability:** Consumer systems are sensitive to power management and thermal throttling. Performance may vary significantly between runs.
+*   **Metadata vs. Raw Data:** The framework prioritizes **raw artifacts** (LLaMA.cpp output) over processed CSV for auditability and debugging. Metadata (timestamps, model aliases) supports reproducibility but is not always available.
+*   **Sampling Bias:** While three runs are recommended, the document warns that generated token counts can vary. Researchers must decide whether to measure maximum throughput or realistic interactive performance, as sampling can bias results.
+*   **Hardware Labels:** Labels must be stable and human-readable (e.g., `cpu/ryzen5600`). They are not substitutes for system metadata; every run must document hardware metadata for transparency.
+
+### 4. Specific Technical Considerations
+*   **Quantization:** Quantization changes the trade-off between memory, quality, and throughput. The document notes that throughput often does not improve linearly with precision and requires benchmarking specific quantization types (e.g., GGUF files).
+*   **Backends:** CPU, CUDA, and Vulkan must be compared carefully. The design suggests testing all three backends on different hardware combinations to isolate hardware bottlenecks.
+*   **Thermal vs. Throughput:** Researchers should decide if they measure **maximum achievable throughput** (controlled environment) or **realistic interactive performance** (ordinary desktop settings, recording system load).
+*   **Variable Latency:** Time to first token is useful but unreliable without changing inference. Total generation time is better measured externally, while prompt/decode times should be extracted from runtime logs.
+*   **Resource Monitoring:** GPU metrics like utilization are sampled, not direct measurements. RAM usage includes caches and other processes, so context is needed for accurate analysis.
+
+### 5. Validation & Reproducibility Best Practices
+*   **Failure Handling:** Failure is treated as data. Metadata should record failure status and error messages to avoid "survivorship bias" in reports.
+*   **Prompt & Model Versioning:** Protocols must be strict. If prompts or model files change, results must be marked as different conditions. Version control (hashing) and file paths are essential for tracking.
+*   **Statistical Reporting:** Do not overclaim from three runs. Report the number of repetitions, aggregation method (e.g., median vs. mean), and include failed runs in denominator counts.
+*   **Automation:** Benchmark automation should remain simple (shell scripts or Python standard libraries) to ensure every result is traceable back to a command line, hardware snapshot, and raw output.
+
+[ Prompt: 71.0 t/s | Generation: 17.8 t/s ]
+
+
+Exiting...

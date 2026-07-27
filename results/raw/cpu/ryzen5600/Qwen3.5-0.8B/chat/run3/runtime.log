@@ -1,0 +1,107 @@
+warning: no usable GPU found, --gpu-layers option will be ignored
+warning: one possible reason is that llama.cpp was compiled without GPU support
+warning: consult docs/build.md for compilation instructions
+
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b10110-8f5ab832c
+model      : /home/dilusha/llm-research/models/Qwen/Qwen3.5-0.8B-GGUF/Qwen3.5-0.8B-Q8_0.gguf
+ftype      : Q8_0
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> You are answering a graduate-level systems question. Give a technically precise answer, but keep it compact enough to be useful to an engineer making a hardware decision.
+
+Scenario:
+A 7B decoder-only model is served on a 6 GB consumer GPU with 32 GB system RAM. The model weights fit on the GPU, but the key-value (KV) cache does not always fit there. A user sends a 2,000-token prompt and requests 300 generated tokens. The system reports excellent prompt-processing throughput but becomes much slow ... (truncated)
+### 1. Lifecycle of KV Cache: Reused vs. Recomputed
+The lifecycle of the Key-Value (KV) cache on a 6GB consumer GPU can be divided into three distinct phases:
+
+*   **Prefill (Prompt Processing):** As the 2,000-token prompt enters the graph, the decoder processes the **prompt tokens** (outputting 2,000 tokens) and computes the **context window** (outputting ~800 tokens) in parallel. The KV cache is populated here using the **prompt context**.
+*   **Token-by-Token Decoding (Recomputed):** As the prompt finishes, the **prompt context is discarded**, and the decoder resumes **recomputing the remaining 1,200 tokens**. During this phase, the cache is populated using the **decoding context** (outputting 1,200 tokens).
+*   **Post-Decode (Recomputed):** Once the full 3,200 tokens are generated and the prompt is discarded, the cache is **recomputed** from scratch to generate the final output. This is the primary source of latency increase.
+
+**Distinction:**
+*   **Prefill:** Uses the **Prompt Context** (2,000 tokens).
+*   **Decode:** Uses the **Decoding Context** (1,200 tokens).
+
+### 2. Stress Resource Separation: Prompt vs. Latency
+Prompt processing and decoding do not share hardware resources. They utilize different pipelines and memory streams:
+
+*   **Prompt Processing:** Executes via **Memory Bandwidth** (e.g., L3 Cache or PCIe memory). It handles the instruction stream (tokens) and computes intermediate values.
+*   **Decoding:** Executes via **CPU Cores** (or specialized GPU kernels) to perform the heavy lifting of **Linear Scheduling** (finding the optimal path) and **Memory Management** (shifting buffers).
+
+**Why High Prompt Rate ≠ Low Latency:**
+A high **prompt-to-token (P/T)** ratio is a measure of *instruction throughput*, not *latency*. Latency is determined by the **hardware throughput of the decoding engine** (CPU/GPU) relative to the size of the decoding context. If the GPU can process 100 tokens per second, but the context window is 1,000 tokens, the P/T ratio is 100, yet the average latency per token is 10 seconds. The bottleneck is the decoding engine, not the prompt scheduler.
+
+### 3. Context Scaling Effects (2,000 → 8,000)
+Moving the context window from 2,000 to 8,000 tokens fundamentally alters the workload:
+
+*   **Prefill Scaling:** The GPU handles the 8,000 context during prompt generation. The ratio of context per token remains constant (8,000 tokens / 2,000 tokens = 4x), so **prefill throughput stays flat**.
+*   **Decode Scaling (Critical):** The 2,000 tokens in the context become 8,000 tokens to be decoded. The decoding engine must now run in parallel across a 4x larger context window.
+    *   **Latency Spike:** If the GPU's decoding throughput is constrained (e.g., CPU-bound or memory-bound), the average latency per token increases significantly as more context is decoded.
+    *   **Prefill Bottleneck:** If the GPU's instruction throughput is saturated (e.g., max 500 tokens/sec), the GPU cannot keep up with the 8,000 context window, causing the entire prompt generation pipeline to stall.
+
+### 4. Separating Claims vs. Implementation Details
+*   **Generally True Claims:**
+    *   Prefill uses the Prompt Context.
+    *   Prefill uses Memory Bandwidth.
+    *   The GPU has a limited instruction throughput.
+    *   Context windows must fit in the GPU memory to prevent OOM.
+*   **Implementation-Specific Claims:**
+    *   **Cache Precision:** Does the GPU use 32-bit or 64-bit floating-point arithmetic for KV computation?
+    *   **Kernel Support:** Does the specific kernel support out-of-memory paging for the decoding phase?
+    *   **Paging Mode:** Does the system use hardware paging to swap the 8,000 tokens into RAM?
+
+### 5. Three Measurement Comparisons for Bottleneck Identification
+To isolate the true bottleneck, perform the following controlled experiments:
+
+1.  **Context Window Scaling Ratio (KV-Throughput):**
+    *   *Test:* Gradually increase the context window from 2,000 to 8,000 tokens.
+    *   *Metric:* Measure **Prefill Throughput** (tokens/sec).
+    *   *Result:* If Prefill throughput is constant, the bottleneck is likely in **Decoding Throughput** (Decoding Tokens/sec) rather than instruction throughput.
+
+2.  **CPU-GPU Bandwidth Ratio:**
+    *   *Test:* Measure **Memory Bandwidth** (Prefill) and **GPU Cores (Decoding)** (decode tokens/sec).
+    *   *Metric:* Calculate `MemBandwidth / (GPU Cores * 1.0 / DecodingTokens/sec)`.
+    *   *Result:* If the ratio is low, **GPU Cores** are the bottleneck. If the ratio is high, **Memory Bandwidth** is the bottleneck.
+
+3.  **Kernel Page Size / Paging Control:**
+    *   *Test:* Compare performance when the GPU is **paged** (uses physical RAM) vs. **offloaded** (uses local cache).
+    *   *Metric:* Measure Latency per token.
+    *   *Result:* If the offloaded path is faster than the paged path, the issue is a **cache miss** (likely 64-bit precision or insufficient local cache). If paged is faster, the issue is **disk latency** or **memory latency**.
+
+**Numerical Example:**
+Consider a scenario where the GPU has a max instruction throughput of **100 tokens/sec** and the decoding context is **2,000 tokens**.
+*   **Prompt Processing:** 100 tokens/sec.
+*   **Prompt Tokens:** 2,000.
+*   **Prompt Latency:** 20 seconds.
+*   **Latency per Token:** 0.1 seconds.
+
+If you increase the context to 8,000 tokens:
+*   **Instruction Throughput:** Remains 100 tokens/sec (GPU is still the bottleneck).
+*   **Decoding Throughput:** Requires 8,000 tokens; GPU can only process 100 tokens/sec.
+*   **Latency per Token:** 100 tokens/sec / 8,000 tokens = **0.0125 seconds**.
+*   **Total Time:** The system is now stuck at **20 seconds** for the entire conversation, making the **prompt processing** the dominant factor, not the decoding.
+
+[ Prompt: 75.7 t/s | Generation: 20.3 t/s ]
+
+
+Exiting...

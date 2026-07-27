@@ -1,0 +1,285 @@
+Input prompt
+
+You are simulating a senior coding-agent design review without external tools, internet access, shell commands, package installation, or file-system inspection. Work only from the specification and artifacts below. Be concrete enough that another engineer could implement and test the design.
+
+Project:
+A research project needs a command-line llama.cpp benchmark runner supporting CPU, CUDA, and Vulkan; model aliases from a configuration file; fixed workload prompts; performance output; hardware metadata; resource monitoring; and one metadata file per run. Raw output must remain available for manual audit. The runner must distinguish a failed model run from missing optional monitoring data.
+
+Existing constraints:
+* Each condition is repeated three times and compared manually using each run's `response.txt`/raw response plus metrics.
+* The default context is 4096, generation limit 256, temperature 0.7, and CPU thread count 1; a workload may override context explicitly.
+* Workloads are `chat`, `batch`, `coding`, `summarization`, `agentic`, and `world_knowledge`.
+* The runner must not mix results if model file, backend, hardware label, context, generation limit, prompt, temperature, GPU layers, build, or driver environment changes.
+* Monitors may be unavailable or sampled sparsely. A model process may fail after creating partial output.
+
+Required deliverables:
+1. Requirements and invariants: list inputs, artifacts, success/failure states, and the experimental identity tuple. Identify at least one ambiguity that must be resolved before implementation.
+2. State-machine workflow: describe the lifecycle from validation through launch, monitoring, process exit, and finalization, including what happens on timeout, OOM, malformed performance output, and monitor failure.
+3. Auditable design: propose shell/Python component boundaries, a metadata schema, atomic-write or partial-file conventions, and how to preserve stdout/stderr and the exact prompt used.
+4. Analysis integrity: explain how to prevent a failed run or variable generated-token count from producing a misleading throughput comparison, and how a parser should treat unknown llama.cpp output formats.
+5. Test plan: provide at least six tests, including one simulated backend failure, one missing monitor, one prompt containing spaces/newlines, one partial output, and one changed prompt hash.
+6. Pre-merge review: name the three highest-risk design flaws in your proposal and the concrete changes that would fix them.
+
+Use these exact headings: Requirements and Invariants; State Machine; Auditable Design; Analysis Integrity; Test Plan; Pre-merge Review. Keep the design implementation-oriented and avoid claiming that a metric is available if the specification does not guarantee it.
+
+Final model response
+
+warning: no usable GPU found, --gpu-layers option will be ignored
+warning: one possible reason is that llama.cpp was compiled without GPU support
+warning: consult docs/build.md for compilation instructions
+
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b10110-8f5ab832c
+model      : /home/dilusha/llm-research/models/Qwen/Qwen3.5-0.8B-GGUF/Qwen3.5-0.8B-Q8_0.gguf
+ftype      : Q8_0
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> You are simulating a senior coding-agent design review without external tools, internet access, shell commands, package installation, or file-system inspection. Work only from the specification and artifacts below. Be concrete enough that another engineer could implement and test the design.
+
+Project:
+A research project needs a command-line llama.cpp benchmark runner supporting CPU, CUDA, and Vulkan; model aliases from a configuration file; fixed workload prompts; performance output; hardware me ... (truncated)
+# Requirements and Invariants
+
+## Inputs
+*   **Model File**: Path to a `.llama` binary, e.g., `model.safetensors`, `model.onnx` or `.bin`.
+*   **Backend**: String specifying the inference backend (e.g., `cuda`, `vulkan`, `default`), or a list/enum for `cuda`, `vulkan`, `cpu`, `unknown`.
+*   **Hardware Label**: String specifying the underlying hardware (e.g., `nvidia`, `h100`, `gtx1080`, `unknown`).
+*   **Context**: String specifying the context window size (default `4096`, user overrides).
+*   **Generation Limit**: Integer specifying the max tokens per generation (default `256`, user overrides).
+*   **Temperature**: Float specifying sampling temperature (default `0.7`, user overrides).
+*   **GPU Layers**: Integer specifying the number of CUDA layers (default `1`, user overrides).
+*   **Build**: String specifying the build configuration (e.g., `latest`, `stable`, `dev`, `unknown`).
+*   **Driver Environment**: String specifying the driver version (e.g., `5.0.0`, `4.3.0`, `unknown`).
+*   **Workload**: String specifying the task type (e.g., `chat`, `batch`, `coding`, `summarization`, `agentic`, `world_knowledge`).
+*   **Prompt**: String containing the user message (may include spaces or newlines).
+*   **Metadata File**: File path to a JSON or text metadata file containing:
+    *   `runs`: Array of `{id: "run_x", ...}` containing run metadata.
+    *   `metrics`: Object containing CPU/GPU/VRAM usage, time, etc.
+    *   `monitor_status`: Boolean indicating if monitoring data is available.
+    *   `monitor_samples`: Array of sample monitor metrics (e.g., `sample_1`, `sample_2`).
+
+## Artifacts
+*   `run_results.txt`: Raw output from the inference process (stdout/stderr combined, line-buffered).
+*   `run_metadata.json`: JSON file containing metadata for the specific run.
+*   `monitor_samples.txt`: Text file containing the sample monitor metrics.
+*   `run_id.txt`: Text file containing the unique identifier of the run.
+
+## Success/Failure States
+*   **Success**: The runner completes the inference, generates the `run_results.txt` and `run_metadata.json`, and the `monitor_samples.txt` file. The `run_id` is generated and written to `run_id.txt`.
+*   **Failure**: The inference process fails (e.g., memory exhaustion, invalid model file, backend mismatch, hardware mismatch). The runner exits immediately, does not write `run_results.txt` or `monitor_samples.txt`, and the `run_id` is NOT written to `run_id.txt`.
+
+## Experimental Identity Tuple
+*   **Identity**: `(backend, context, generation_limit, temperature, gpu_layers, build, driver_env, workload, prompt_hash, run_id)`
+
+## Ambiguity to Resolve
+**Ambiguity**: The specification mentions that "a workload may override context explicitly," but it does not define the *exact* format for this override (e.g., is it a new string, a number, or a tuple?). Furthermore, the specification states "Raw output must remain available for manual audit," but it does not explicitly guarantee that the *prompt* used in the output is identical to the *prompt* used in the metadata file. If the prompt changes, the metadata file's prompt hash might not match the raw output prompt, potentially misleading throughput calculations.
+
+---
+
+# State Machine
+
+## Lifecycle
+
+1.  **Validation**:
+    *   Read model file.
+    *   Validate model file exists and is a valid `.llama` binary.
+    *   Validate backend string (validated against allowed list).
+    *   Validate hardware label (validated against allowed list).
+    *   Validate context string (default `4096`, check for user override).
+    *   Validate generation limit integer (check for user override).
+    *   Validate temperature float (check for user override).
+    *   Validate GPU layers integer (check for user override).
+    *   Validate build string (default `latest`, check for user override).
+    *   Validate driver environment string (check for user override).
+    *   Validate workload string (validated against allowed list).
+    *   Validate prompt string.
+    *   Read metadata file.
+
+2.  **Launch**:
+    *   Check if `monitor_status` is `true`.
+    *   If `monitor_status` is `false`, return immediately without starting inference or writing outputs.
+    *   If `monitor_status` is `true`, start the inference process with the provided parameters.
+
+3.  **Inference & Monitoring**:
+    *   Execute inference.
+    *   **Timeout**:
+        *   If timeout occurs:
+            *   Log an error to `monitor_samples.txt`.
+            *   **Do not** write `run_results.txt` or `run_metadata.json`.
+            *   Write `run_id` to `run_id.txt`.
+            *   Return failure.
+    *   **OOM (Out of Memory)**:
+        *   Log an error to `monitor_samples.txt`.
+        *   **Do not** write `run_results.txt` or `run_metadata.json`.
+        *   Write `run_id` to `run_id.txt`.
+        *   Return failure.
+    *   **Malformed Performance Output**:
+        *   If `run_results.txt` is empty or contains invalid data:
+            *   **Do not** write `run_metadata.json`.
+            *   **Do not** write `monitor_samples.txt`.
+            *   Write `run_id` to `run_id.txt`.
+            *   Return failure.
+    *   **Monitor Failure**:
+        *   If `monitor_samples.txt` is empty:
+            *   Write `run_id` to `run_id.txt`.
+            *   Return failure.
+
+4.  **Process Exit**:
+    *   After successful inference (or failure), wait for the process to finish.
+    *   Check if the process has exited cleanly.
+
+5.  **Finalization**:
+    *   Write `run_metadata.json` containing the run ID.
+    *   Write `monitor_samples.txt`.
+    *   Write `run_id.txt`.
+    *   Return success.
+
+---
+
+# Auditable Design
+
+## Shell/Python Component Boundaries
+
+*   **Python Layer**:
+    *   Reads all input files (model, backend, hardware, context, etc.) using `open()`, `read()`, `split()`, and `json.loads()`.
+    *   Performs all validations, including checking for user overrides.
+    *   Writes the required output files (`run_results.txt`, `run_metadata.json`, `monitor_samples.txt`, `run_id.txt`) using `open()`, `write()`, and `print()`.
+    *   Does not read `stdout` or `stderr` for analysis; these are read-only artifacts.
+*   **Shell Layer**:
+    *   Reads the `run_id.txt` file and performs the validation checks.
+    *   Writes the JSON file (`run_metadata.json`) and the monitor samples file (`monitor_samples.txt`).
+    *   Prints the final `run_id` to `run_id.txt`.
+
+## Metadata Schema
+The `run_metadata.json` file must follow this exact structure:
+```json
+{
+  "runs": [
+    {
+      "id": "run_x",
+      "backend": "cuda",
+      "context": "4096",
+      "generation_limit": 256,
+      "temperature": 0.7,
+      "gpu_layers": 1,
+      "build": "latest",
+      "driver_env": "5.0.0",
+      "workload": "chat",
+      "prompt_hash": "abc123..."
+    }
+  ],
+  "metrics": {
+    "cpu_usage": 0.25,
+    "gpu_usage": 0.50,
+    "ram_usage": "19.2 GB",
+    "time_ms": 1200
+  },
+  "monitor_status": true,
+  "monitor_samples": [
+    {"metric": "tokens_per_sec", "value": 50000},
+    {"metric": "latency_ms", "value": 5.5}
+  ]
+}
+```
+
+## Atomic-Write or Partial-File Conventions
+*   **`run_metadata.json`**: Use **partial writes**. If the file is not empty before the run fails, write it as-is. If it is empty, write it with the current run ID and overwrite it. This allows the metadata file to persist even if the run fails immediately, while still allowing the runner to exit.
+*   **`monitor_samples.txt`**: Write it immediately after successful inference.
+*   **`run_id.txt`**: Write it immediately after successful inference.
+*   **`run_results.txt`**: Write it immediately after successful inference.
+
+## Preserving stdout/stderr
+*   Ensure `run_results.txt` captures the exact bytes of `stdout` and `stderr` combined, including any buffering issues, without relying on `sys.stdout` or `sys.stderr` for logging. The script should read these files as binary.
+
+---
+
+# Analysis Integrity
+
+## Preventing Distorted Throughput Comparisons
+A common pitfall in benchmarking is comparing token counts across runs. If a failed run or a run with partial output is analyzed, the token count in `run_results.txt` might be 0 or truncated.
+*   **Fix**: The parser must handle **unknown llama.cpp output formats** gracefully. If `run_results.txt` is empty or contains non-standard output, the parser should detect this, treat the metrics as zero, and **do not** include this run in the `runs` list or the `metrics` object. The parser must explicitly check the file existence and content before attempting to parse it.
+
+## Parsing Unknown llama.cpp Output Formats
+Llama.cpp outputs vary in format depending on the environment (e.g., `1000`, `1000, 5`, or `1000\n\n5`). A robust parser must:
+1.  Read the entire `run_results.txt` content.
+2.  Split it by newlines (`\n`) but also handle whitespace (` \t`).
+3.  Split the first line by commas.
+4.  If the first line is empty, assume the rest is a single value per line or a sequence.
+5.  If the first line is not a single integer, try splitting by commas.
+6.  If the parsing fails (e.g., a line contains `1000\n5` instead of `1000, 5`), log a warning and treat the metrics as `0`.
+7.  Ensure the parser does not crash if the file is empty.
+
+---
+
+# Test Plan
+
+The following tests verify the design against the specified constraints and invariants.
+
+1.  **Missing Monitor Test**:
+    *   *Input*: Model file, backend `cuda`, context `4096`, generation limit `256`, temperature `0.7`, GPU layers `1`, build `latest`, driver `5.0.0`, workload `chat`, prompt `test`. Metadata file is **empty**.
+    *   *Expected*: The runner should check `monitor_status`. Since it is `false`, it should immediately exit without starting inference, writing only `run_id.txt` and failing to write any files. The output should be an empty `run_results.txt`.
+
+2.  **Prompt with Spaces/Newlines Test**:
+    *   *Input*: Same as above, but prompt contains two spaces or newlines.
+    *   *Expected*: The parser must handle these characters correctly to extract the prompt hash. The output should be valid JSON, and the `run_id.txt` should exist.
+
+3.  **Partial Output Test**:
+    *   *Input*: Same as above, but `run_results.txt` is empty or contains garbage data.
+    *   *Expected*: The parser detects the error, does not write `run_metadata.json`, does not write `monitor_samples.txt`, but writes `run_id.txt`. The JSON file should be empty.
+
+4.  **Changed Prompt Hash Test**:
+    *   *Input*: Same as above, but the prompt is modified (e.g., changed to "Hello").
+    *   *Expected*: The parser must recalculate the `prompt_hash`. Since the prompt changed, the JSON file should be updated to reflect the new hash.
+
+5.  **Failed Run Exit Test**:
+    *   *Input*: Same as above, but the backend is `unknown` (which is not in the valid list).
+    *   *Expected*: The validation fails the backend check. The runner should immediately exit. No files should be written.
+
+6.  **Successful Run Test**:
+    *   *Input*: Valid inputs, valid backend, valid hardware, valid monitor enabled.
+    *   *Expected*: The runner should start inference successfully. It should generate `run_results.txt`, `run_metadata.json`, and `monitor_samples.txt`. The `run_id.txt` should be populated.
+
+---
+
+# Pre-merge Review
+
+## Three Highest-Risk Design Flaws
+
+### 1. Ambiguity in "Workload Override Context"
+*   **Risk Level**: High.
+*   **Description**: The specification states "a workload may override context explicitly," but provides no format specification (e.g., "override context by adding a space" or "override by setting a separate variable"). This creates ambiguity in how the override should be interpreted, leading to inconsistent benchmarking results where a user might expect a specific format but the system accepts an alternative.
+*   **Fix**: Explicitly define the override format in the **Test Plan** and document it in the **Requirements and Invariants**. Recommend using a standardized field name like `override_context` or `workload_override` in the metadata schema to ensure consistency.
+
+### 2. Ambiguity in "Prompt Output Mapping"
+*   **Risk Level**: Medium.
+*   **Description**: The specification does not guarantee that the prompt used in the output (`run_results.txt`) is identical to the prompt used in the metadata file. This could lead to a situation where the `prompt_hash` in the metadata is different from the prompt used to generate the output, causing the throughput calculation to be inaccurate.
+*   **Fix**:
+    *   The **Test Plan** must test for the presence of a prompt hash in the metadata (e.g., verify `prompt_hash` exists).
+    *   The **Pre-merge Review** must include a step where the merge script compares the prompt used in `run_results.txt` against the prompt in `run_metadata.json`. If they differ, the merge script should warn and potentially rollback the run or log a warning.
+
+### 3. Invalidation of Monitoring Data upon Run Failure
+*   **Risk Level**: Medium.
+*   **Description**: The specification states that "monitors may be unavailable or sampled sparsely." It does not explicitly state what happens if a monitor sample is missing or if monitoring data is lost. While a simple `False` flag might be acceptable, it leaves the data on the filesystem where a developer cannot verify its absence or validity.
+*   **Fix**:
+    *   The **State Machine** should ensure that if `monitor_samples.txt` is empty, the runner writes the `run_id` to `run_id.txt` but returns a failure (or logs a specific error).
+    *   The **Pre-merge Review** must explicitly document this behavior: "If `monitor_samples.txt` is empty, `run_metadata.json` and `monitor_samples.txt` will not be written. Only `run_id.txt` will be written."
+    *   This ensures the data remains available for manual audit as per the "Raw output must remain available" constraint.
