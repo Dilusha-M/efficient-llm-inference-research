@@ -1,0 +1,73 @@
+warning: no usable GPU found, --gpu-layers option will be ignored
+warning: one possible reason is that llama.cpp was compiled without GPU support
+warning: consult docs/build.md for compilation instructions
+
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b10110-8f5ab832c
+model      : /home/dilusha/llm-research/models/Qwen/Qwen3.5-4B-GGUF/Qwen3.5-4B-Q4_K_M.gguf
+ftype      : Q4_K - Medium
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> You are reviewing production-quality Python for an inference benchmark. Implement the function below in Python using only the standard library.
+
+Task:
+Implement `summarize_decode_speeds(lines)` where `lines` is an iterable of strings. Return a dictionary with exactly these keys:
+
+* `count`: number of valid decode records
+* `min_tps`: minimum valid tps, or `None` when there are no valid records
+* `max_tps`: maximum valid tps, or `None` when there are no valid records
+* `avg_tps`: arithmetic mean  ... (truncated)
+```python
+def summarize_decode_speeds(lines):
+    """
+    Summarizes decode speeds from a list of log lines.
+    
+    A record is valid if:
+    1. It is a string.
+    2. After splitting on whitespace, it contains 'event=decode'.
+    3. It contains a 'tps=<value>' field where <value> is a finite, strictly positive float.
+    4. No duplicate keys (other than event) or conflicting values for 'tps'.
+    
+    Returns a dictionary with:
+    - count: number of valid records
+    - min_tps: minimum valid tps (or None)
+    - max_tps: maximum valid tps (or None)
+    - avg_tps: arithmetic mean rounded to 3 decimals (or None)
+    """
+    
+    min_val = None
+    max_val = None
+    total = 0.0
+    count = 0
+    
+    for line in lines:
+        # Requirement: Do not crash if lines contains a non-string item; ignore that item.
+        if not isinstance(line, str):
+            continue
+            
+        # Tokenize on whitespace
+        tokens = line.split
+
+[ Prompt: 12.9 t/s | Generation: 5.8 t/s ]
+
+
+Exiting...

@@ -1,1 +1,0 @@
-# Manual Quality Evaluation
