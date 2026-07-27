@@ -1,0 +1,21 @@
+You are simulating a coding agent workflow without using external tools, internet access, shell commands, package installation, or file system inspection. Work only from the requirements below.
+
+Requirements:
+A research project needs a command-line benchmark runner for llama.cpp. The runner must support CPU, CUDA, and Vulkan backends; read model aliases from a configuration file; run fixed workloads; collect performance output; record hardware metadata; and produce one metadata file per run. It must be simple enough for researchers to audit and reproduce.
+
+Your response must include these sections:
+
+1. Requirements Analysis
+Identify the required inputs, outputs, assumptions, and constraints.
+
+2. Plan
+Create a step-by-step implementation plan for the runner and supporting scripts.
+
+3. Proposed Implementation
+Describe the shell and Python components, their responsibilities, and the data flow between them.
+
+4. Risks
+Identify risks related to reproducibility, hardware monitoring, parsing llama.cpp output, backend differences, and failure handling.
+
+5. Review
+Review the proposed solution as if you were checking it before merging. Point out likely bugs, missing tests, and improvements that should be made before relying on the results in an academic paper.

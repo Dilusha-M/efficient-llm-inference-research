@@ -1,0 +1,10 @@
+You are given a log file produced by an inference benchmark. Each line may contain a timestamp, an event name, and one or more key=value pairs. Some lines are malformed and should be ignored.
+
+Task:
+Design and implement a small Python function named summarize_decode_speeds(lines) that accepts a list of strings and returns a dictionary with:
+- count: number of valid decode speed records
+- min_tps: minimum decode tokens per second
+- max_tps: maximum decode tokens per second
+- avg_tps: arithmetic mean decode tokens per second rounded to three decimals
+
+A valid decode speed record is any line containing event=decode and tps=<float>. Explain your parsing choices, error handling, and time complexity. Include a short example using at least five input lines, including malformed lines.

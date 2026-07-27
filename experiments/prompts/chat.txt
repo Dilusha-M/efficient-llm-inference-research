@@ -1,0 +1,4 @@
+You are answering a technical question for a graduate-level systems course.
+
+Question:
+Explain how the key-value cache changes inference behavior in a decoder-only transformer. Include the difference between prompt processing and token-by-token decoding, why memory bandwidth becomes important during decoding, and how context length can affect latency on consumer hardware.

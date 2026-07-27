@@ -1,0 +1,16 @@
+Answer the following independent tasks. Keep the answers clearly separated and do not assume information from one task is needed for another.
+
+Task 1:
+Explain the practical difference between model quantization formats Q8_0 and Q4_K_M when running a GGUF model on consumer hardware.
+
+Task 2:
+Given a machine with 16 GB of RAM and a 6 GB GPU, describe a conservative approach for selecting context length and GPU layer offload for llama.cpp.
+
+Task 3:
+Write pseudocode for computing median decode tokens per second from three repeated benchmark runs.
+
+Task 4:
+Identify three threats to validity in an LLM inference benchmark comparing CPU, CUDA, and Vulkan backends.
+
+Task 5:
+Explain why time to first token and steady-state decode throughput measure different aspects of user-perceived latency.
