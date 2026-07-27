@@ -230,7 +230,8 @@ echo "  output:    $OUT_BASE"
 if [ "$DRY_RUN" -eq 1 ]; then
     printf 'llama command:'
     printf ' %q' "${LLAMA_CMD[@]}"
-    printf '\n'
+    printf '
+'
     exit 0
 fi
 
@@ -238,7 +239,8 @@ mkdir -p "$OUT_BASE"
 QUALITY_DIR="$BASE/results/quality/$HARDWARE/$MODEL_LABEL/$WORKLOAD"
 mkdir -p "$QUALITY_DIR"
 if [ ! -f "$QUALITY_DIR/evaluation.md" ]; then
-    printf '# Manual Quality Evaluation\n' > "$QUALITY_DIR/evaluation.md"
+    printf '# Manual Quality Evaluation
+' > "$QUALITY_DIR/evaluation.md"
 fi
 
 RUN_INDEX=1
@@ -297,6 +299,11 @@ while [ "$RUN_INDEX" -le "$RUNS" ]; do
     TOTAL_TIME=$(awk -v start="$START_NS" -v end="$END_NS" 'BEGIN { printf "%.3f", (end-start)/1000000000 }')
     TTFT=$(awk 'NF { print $1; exit }' "$TTFT_FILE" 2>/dev/null || true)
     [ -n "$TTFT" ] || TTFT="null"
+    TOKEN_COUNTS=$(python3 "$BASE/experiments/scripts/count_tokens.py" \
+        --tokenizer "$(dirname "$LLAMA")/llama-tokenize" --model "$MODEL_PATH" \
+        --prompt-file "$PROMPT_FILE" --result "$RESULT" 2>/dev/null || echo "{}")
+    PROMPT_TOKENS=$(python3 -c 'import json,sys; value=json.loads(sys.argv[1]).get("prompt_tokens"); print(value if value is not None else "null")' "$TOKEN_COUNTS")
+    GENERATED_TOKENS=$(python3 -c 'import json,sys; value=json.loads(sys.argv[1]).get("generated_tokens"); print(value if value is not None else "null")' "$TOKEN_COUNTS")
     MODEL_LOAD_TIME=$(python3 -c 'import re,sys; from pathlib import Path; text=Path(sys.argv[1]).read_text(errors="replace") if Path(sys.argv[1]).exists() else ""; m=re.search(r"load time\s*=\s*([0-9.]+)\s*ms", text, re.I); print(f"{float(m.group(1))/1000:.3f}" if m else "null")' "$RESULT")
 
     CPU_MODEL=$(lscpu 2>/dev/null | awk -F: '/Model name:/ { sub(/^[ \t]+/, "", $2); print $2; exit }')
@@ -334,6 +341,8 @@ while [ "$RUN_INDEX" -le "$RUNS" ]; do
         echo "  \"context_size\": $CONTEXT,"
         echo "  \"generation_tokens_requested\": $TOKENS,"
         echo "  \"generation_tokens\": $TOKENS,"
+        echo "  \"prompt_tokens\": $PROMPT_TOKENS,"
+        echo "  \"generated_tokens\": $GENERATED_TOKENS,"
         echo "  \"threads\": $THREADS,"
         echo "  \"gpu_layers\": $GPU_LAYERS,"
         echo "  \"temperature\": $TEMP,"
