@@ -1,0 +1,91 @@
+warning: no usable GPU found, --gpu-layers option will be ignored
+warning: one possible reason is that llama.cpp was compiled without GPU support
+warning: consult docs/build.md for compilation instructions
+
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b10110-8f5ab832c
+model      : /home/dilusha/llm-research/models/Qwen/Qwen3.5-2B-GGUF/Qwen3.5-2B-Q4_K_M.gguf
+ftype      : Q4_K - Medium
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> Summarize the following technical document. Focus on the experimental design, measurement methodology, limitations, and reproducibility implications.
+
+Technical document:
+
+Large language model inference on consumer hardware is constrained by a combination of memory capacity, memory bandwidth, compute throughput, software backend maturity, and workload shape. Unlike training, inference is often dominated by repeated matrix-vector operations during autoregressive decoding. During prompt processing ... (truncated)
+Here is a summary of the technical document focusing on the experimental design, methodology, limitations, and reproducibility implications for consumer hardware Large Language Model (LLM) inference benchmarking.
+
+### 1. Experimental Design & Workload Diversity
+The core principle of this benchmark is **separating inference phases**. Because the model architecture dictates different bottlenecks at different stages, the design explicitly mandates measuring **Prompt Evaluation Throughput** (processing tokens in parallel during prompt input) and **Decode Throughput** (generating tokens sequentially) independently.
+
+*   **Workload Variability:** The design requires distinct workloads to capture specific bottlenecks:
+    *   **Chat Workloads:** Test general explanatory generation.
+    *   **Coding/Summarization Workloads:** Stress structured reasoning, context handling, and prompt processing.
+    *   **Agentic Workloads:** Simulate multi-step planning without external tool calls.
+    *   **Batch Workloads:** Test instruction separation across unrelated tasks.
+*   **Deterministic vs. Interactive:** The framework distinguishes between two valid interpretations:
+    *   *Maximum Throughput:* Controlled environments (locked power, warm-up, no background apps) to show raw capability.
+    *   *Realistic Interactive:* Ordinary desktop settings with recorded power/thermal load to reflect real-world usage.
+*   **Fixed Prompts:** To ensure fair comparison, the document emphasizes using fixed prompts with consistent tokenization. Changing prompt length or content invalidates a run, as it alters tokenization rates and generation behavior.
+
+### 2. Measurement Methodology
+The benchmark framework relies on a strict hierarchy of evidence to ensure data integrity:
+
+*   **Primary Data Source (Raw Outputs):**
+    *   The runner must capture **full stdout/stderr** from the `llama.cpp` binary.
+    *   A parser extracts specific metrics (prompt/decode throughput, generation length, time-to-first-token) from the *raw* output.
+    *   *Rationale:* Preserving raw files allows for manual inspection and auditability; a CSV is only a derived artifact.
+*   **Resource Monitoring:**
+    *   **GPU:** `nvidia-smi` for timestamp, power draw, temperature, and VRAM usage.
+    *   **CPU/RAM:** Standard Linux interfaces (`/proc/stat`, `/proc/meminfo`, etc.).
+    *   *Constraint:* Missing metrics are recorded as null/blank rather than failing the run.
+*   **Timing Extraction:**
+    *   **Prompt/Decode Times:** Extracted directly from `llama.cpp` performance flags.
+    *   **Total Wall-Clock Time:** Measured externally around command invocation.
+    *   **TTO (Time to First Token):** Only recorded if reliably measurable via the inference process; otherwise, null.
+*   **Metadata Capture:** The runner preserves a comprehensive set of metadata including model alias, resolved path, backend binary, context length, generation limit, temperature, GPU layer count, and runtime parameters.
+
+### 3. Hardware Labeling & Configuration Control
+To enable reproducibility, the framework treats "Experiment Conditions" as a fixed tuple. Any change to this tuple constitutes a new experiment:
+*   **Hardware Labels:** Must be human-readable (e.g., `cpu/ryzen5600` vs. `gpu/rtx2060-12gb`). Multi-GPU setups require explicit device naming.
+*   **Configuration Traces:** Every result must be tied to a specific configuration state (model file, backend build, driver version, OS).
+*   **Failure Reporting:** Runs that fail due to missing files, driver mismatches, or insufficient VRAM are **intentional data points**. They are not skipped; they are recorded to study resource-constrained hardware limits.
+
+### 4. Limitations & Validity Threats
+The document explicitly acknowledges significant threats to validity that must be reported:
+*   **Thermal & Power:** Consumer hardware exhibits variable thermal throttling and power management behaviors that are not controlled in maximum-throughput scenarios.
+*   **Sampling Variance:** Deterministic decoding can mask content variability; sampling decoding might better reflect interactive use but introduces noise.
+*   **Quantization Trade-offs:** Lower precision (e.g., Q4) reduces memory pressure but alters kernel behavior and throughput non-linearly.
+*   **Backend Maturity:** Comparing backends (CUDA, Vulkan, CPU) mixes hardware and software maturity, requiring careful documentation of binary versions and build options.
+*   **Statistical Power:** Three runs are insufficient to characterize all variance sources. The framework advises reporting the number of repetitions, aggregation method, and inclusion of failures in denominator counts.
+
+### 5. Reproducibility Implications
+The document stresses that the output is only useful if the *input state* is fully traceable.
+*   **CSV vs. Raw:** The CSV is a summary; the raw run directory and metadata are the evidence. If the parsing logic changes, the CSV must be regenerated from raw files.
+*   **Auditability:** A researcher must be able to trace a throughput number back to a specific raw output, a specific hardware snapshot, and a specific prompt/content combination.
+*   **Version Control:** Prompts and model files should be versioned or hashed. If a researcher changes a prompt or model during the project, the resulting experiment is considered a distinct condition, preventing the mixing of results from different states.
+*   **No "Hiding Variability":** The framework's goal is transparency. Variability must be exposed and analyzable rather than hidden by simplified metrics.
+
+[ Prompt: 31.4 t/s | Generation: 11.5 t/s ]
+
+
+Exiting...

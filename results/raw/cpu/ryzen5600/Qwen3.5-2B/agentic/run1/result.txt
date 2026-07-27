@@ -1,0 +1,228 @@
+Input prompt
+
+You are simulating a senior coding-agent design review without external tools, internet access, shell commands, package installation, or file-system inspection. Work only from the specification and artifacts below. Be concrete enough that another engineer could implement and test the design.
+
+Project:
+A research project needs a command-line llama.cpp benchmark runner supporting CPU, CUDA, and Vulkan; model aliases from a configuration file; fixed workload prompts; performance output; hardware metadata; resource monitoring; and one metadata file per run. Raw output must remain available for manual audit. The runner must distinguish a failed model run from missing optional monitoring data.
+
+Existing constraints:
+* Each condition is repeated three times and compared manually using each run's `response.txt`/raw response plus metrics.
+* The default context is 4096, generation limit 256, temperature 0.7, and CPU thread count 1; a workload may override context explicitly.
+* Workloads are `chat`, `batch`, `coding`, `summarization`, `agentic`, and `world_knowledge`.
+* The runner must not mix results if model file, backend, hardware label, context, generation limit, prompt, temperature, GPU layers, build, or driver environment changes.
+* Monitors may be unavailable or sampled sparsely. A model process may fail after creating partial output.
+
+Required deliverables:
+1. Requirements and invariants: list inputs, artifacts, success/failure states, and the experimental identity tuple. Identify at least one ambiguity that must be resolved before implementation.
+2. State-machine workflow: describe the lifecycle from validation through launch, monitoring, process exit, and finalization, including what happens on timeout, OOM, malformed performance output, and monitor failure.
+3. Auditable design: propose shell/Python component boundaries, a metadata schema, atomic-write or partial-file conventions, and how to preserve stdout/stderr and the exact prompt used.
+4. Analysis integrity: explain how to prevent a failed run or variable generated-token count from producing a misleading throughput comparison, and how a parser should treat unknown llama.cpp output formats.
+5. Test plan: provide at least six tests, including one simulated backend failure, one missing monitor, one prompt containing spaces/newlines, one partial output, and one changed prompt hash.
+6. Pre-merge review: name the three highest-risk design flaws in your proposal and the concrete changes that would fix them.
+
+Use these exact headings: Requirements and Invariants; State Machine; Auditable Design; Analysis Integrity; Test Plan; Pre-merge Review. Keep the design implementation-oriented and avoid claiming that a metric is available if the specification does not guarantee it.
+
+Final model response
+
+warning: no usable GPU found, --gpu-layers option will be ignored
+warning: one possible reason is that llama.cpp was compiled without GPU support
+warning: consult docs/build.md for compilation instructions
+
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b10110-8f5ab832c
+model      : /home/dilusha/llm-research/models/Qwen/Qwen3.5-2B-GGUF/Qwen3.5-2B-Q4_K_M.gguf
+ftype      : Q4_K - Medium
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> You are simulating a senior coding-agent design review without external tools, internet access, shell commands, package installation, or file-system inspection. Work only from the specification and artifacts below. Be concrete enough that another engineer could implement and test the design.
+
+Project:
+A research project needs a command-line llama.cpp benchmark runner supporting CPU, CUDA, and Vulkan; model aliases from a configuration file; fixed workload prompts; performance output; hardware me ... (truncated)
+# Research Project: Llama.cpp Benchmark Runner Design Specification
+
+## 1. Requirements and Invariants
+
+### Inputs and Configuration
+*   **Configuration File (`benchmark.yaml`):**
+    *   Model Identifier (e.g., `llama-3-8b-instruct`, `mistral-7b`).
+    *   Backend Selector (e.g., `vllm`, `llama.cpp`).
+    *   Hardware Label (e.g., `NVIDIA-H100`, `AMD-EPYC`).
+    *   Context Size (default: 4096, must be an integer).
+    *   Generation Limit (default: 256, must be a non-negative integer).
+    *   Temperature (default: 0.7, float in [0, 1]).
+    *   Thread Count (default: 1, integer $\ge$ 1).
+    *   Workload Name (one of: `chat`, `batch`, `coding`, `summarization`, `agentic`, `world_knowledge`).
+*   **Hardware Metadata:**
+    *   Device Type (CPU/GPU/Other).
+    *   GPU Name/Architecture.
+    *   Driver Version.
+    *   Memory Bandwidth (if available).
+
+### Artifacts
+*   **`run_id.txt`**: UUID generated at the start of the run.
+*   **`metrics.csv`**: Contains `timestamp, metric_name, value` for all monitored points.
+*   **`raw_response.txt`**: The raw text output of the benchmark process (must be preserved atomically).
+*   **`analysis.json`**: The final output of the JSON parser (human-readable summary).
+*   **`stderr.log`**: The raw stderr from the benchmark process (preserved alongside output for debugging).
+
+### Success and Failure States
+*   **Success:** `analysis.json` is generated, `metrics.csv` is populated, `raw_response.txt` is present.
+*   **Failure (Model Crash):** `analysis.json` is NOT generated; `metrics.csv` is empty; `raw_response.txt` contains the crash message or empty file.
+*   **Failure (OOM):** `analysis.json` is NOT generated; `raw_response.txt` is present (last partial output) or empty; `metrics.csv` is empty.
+*   **Failure (Monitor Failure):** `analysis.json` is generated; `metrics.csv` is empty or contains only headers; `raw_response.txt` is present.
+
+### The Experimental Identity Tuple
+The runner must output a single line at the end of the JSON summary identifying the run's identity. This tuple must be deterministic based on inputs and must prevent mixing results.
+*   `tuple = { "model": str, "backend": str, "hw": str, "context": int, "limit": int, "prompt": str, "temp": float, "threads": int }`
+
+---
+
+## 2. State Machine Workflow
+
+The lifecycle is managed by a central orchestrator script that defines a deterministic state transition graph.
+
+### Validation Phase
+1.  **Input Check:** Verify `benchmark.yaml` exists and is readable. Check that required keys (`model`, `backend`, `context`, `limit`, `prompt`, `threads`) are present.
+2.  **Configuration Lock:** Verify the configuration matches the current project settings (specifically `context` and `limit`). If the user changes these mid-run, the runner must refuse or log a warning but continue.
+3.  **Hardware Check:** Determine the physical device. If a specific backend (e.g., CUDA) is requested but the hardware is unsupported, the runner should default to the fallback backend (e.g., CPU-only) but log the mismatch as a "Hardware Limitation" rather than failing immediately, to avoid silent failures.
+
+### Launch Phase
+1.  **Process Creation:** Fork a process with `lambci/llama.cpp`.
+2.  **Environment Injection:**
+    *   Set `LLAMA_CPP_WORKLOAD` to the workload name.
+    *   Set `LLAMA_CPP_CONTEXT` to the configured value.
+    *   Set `LLAMA_CPP_GENERATION_LIMIT` to the configured value.
+    *   Set `LLAMA_CPP_TEMPERATURE` to the configured value.
+    *   Set `LLAMA_CPP_THREADS` to the configured value.
+3.  **Monitor Registration:** If a monitoring agent is configured, register the `run_id` and start the sampling loop.
+
+### Monitoring Loop (Interval-based)
+If `metrics.csv` is not empty or a monitor is active:
+1.  **Read:** Read the most recent metric from the `metrics.csv` file (or the buffer of the monitor).
+2.  **Record:** Append current time and values to the file.
+3.  **Timeout Handling:** If no new metric is written for > 5s, flush the buffer to `metrics.csv` and stop sampling.
+
+### Process Exit and Finalization
+1.  **Timeout:** If the process exits after the timeout window, stop sampling immediately.
+2.  **OOM:** If the process OOMs, ensure `raw_response.txt` is written with the *last* partial output before the crash (if possible) or an empty string. Do not crash the runner.
+3.  **Malformed Output:** If the benchmark process exits with a non-zero exit code containing "error", "fail", or "OOM" in the output, do not parse `analysis.json`. Emit a "Failure" status in the final JSON.
+4.  **Monitor Failure:** If the monitor process crashes while collecting data, stop sampling and mark `metrics.csv` as "Incomplete".
+5.  **Finalization:**
+    *   Write `metrics.csv` to disk (atomic: append mode).
+    *   Parse `raw_response.txt` into `analysis.json` if the process exited cleanly.
+    *   Append the `run_id` to `analysis.json`.
+    *   Append the `tuple` to `analysis.json`.
+
+---
+
+## 3. Auditable Design
+
+### Component Boundaries
+*   **`benchmark_runner.py` (Orchestrator):** Handles YAML parsing, configuration locking, process spawning, and finalization. No direct I/O with the benchmark binary.
+*   **`benchmark_worker.py` (The Benchmark):**
+    *   *Input:* Reads `benchmark.yaml`.
+    *   *Output:* Writes `raw_response.txt` (to a temp file, moved to final location atomically) and `metrics.csv` (if configured).
+    *   *Logic:* Executes the benchmark binary with injected environment variables. Handles cleanup on exit.
+*   **`benchmark_monitor.py` (Optional):**
+    *   *Input:* `metrics.csv` file path.
+    *   *Output:* `metrics.csv` file (overwrite mode if `append: false`).
+    *   *Logic:* Polls the benchmark process for new metrics.
+
+### Metadata Schema (`analysis.json`)
+The final JSON object must contain:
+```json
+{
+  "run_id": "uuid-hex...",
+  "metadata": {
+    "model": "...",
+    "backend": "...",
+    "hw": "...",
+    "context": 4096,
+    "limit": 256,
+    "prompt": "...",
+    "temp": 0.7,
+    "threads": 1
+  },
+  "status": "success" | "failure" | "monitor_failure",
+  "metrics": [ ... array of {timestamp, val} ... ] // Only if successful/incomplete
+  // No "throughput" field unless explicitly derived from the raw output if required by the specific workload
+}
+```
+
+### Atomic-Write and Partial-File Conventions
+*   **`raw_response.txt`:**
+    *   **Convention:** Write to a temporary file (`/tmp/benchmark_raw_{run_id}.tmp`) first.
+    *   **Move:** Only move to the final location (`./results/raw_response.txt`) if the move succeeds.
+    *   **On Failure:** If the move fails (e.g., permission denied, process crashed), do **not** overwrite the final file. Leave the original empty or contain the last partial output. Ensure the temp file is cleaned up on failure.
+    *   **On Success:** Move immediately after writing.
+*   **`metrics.csv`:**
+    *   **Convention:** Use `csv.writer` with `newline='\n'` (Unix line endings) to preserve the exact raw format of the benchmark output.
+    *   **Incomplete State:** If the benchmark crashed mid-run, the file might be truncated. Do not attempt to "fix" this file in the finalization step. Treat it as "Incomplete" and do not re-write it to ensure data integrity.
+
+---
+
+## 4. Analysis Integrity
+
+### Preventing Misleading Throughput
+To prevent a failed run or a run with variable generated-token counts from skewing throughput comparisons:
+1.  **Hard Cap on Parsing:** Do not attempt to calculate `tokens_per_second` if `raw_response.txt` is empty or malformed. Instead, output a placeholder value (e.g., `0.0`) or a "N/A" string in `analysis.json`.
+2.  **Context Locking:** If the benchmark process changes the context size (via `LLAMA_CPP_CONTEXT`) but the runner does not see it (due to environment variable injection failing or being ignored), the `context` field in the tuple will reflect the *default* value set at launch, not the *effective* value. The runner must ensure `LLAMA_CPP_CONTEXT` is set *before* the benchmark process starts.
+3.  **OOM Handling:** If the benchmark runs out of memory, it likely cannot generate tokens at all. A zero token count is the only truth. Do not try to infer throughput from a crash.
+
+### Parser for Unknown Formats
+*   **Default Behavior:** If `raw_response.txt` is binary or non-text, the parser should log a warning but *not* crash.
+*   **Fallback:** If the file is not readable or parsing fails, the runner should default `analysis.json` to:
+    ```json
+    {
+      "status": "failure",
+      "error": "Unable to parse response file",
+      "metadata": {...}
+    }
+    ```
+*   **No Throughput Calculation:** The parser should explicitly skip any calculation of `throughput` if `raw_response.txt` is missing or unreadable, regardless of whether the benchmark was successful or failed. The presence of the `metrics` array (even if empty or partial) is sufficient to indicate a "monitor_failure" or "process_crash" state, which the user must resolve manually.
+
+---
+
+## 5. Test Plan
+
+1.  **Valid Full Run:** Execute `run.py` with valid `benchmark.yaml`. Verify `analysis.json` contains all metadata fields, `metrics.csv` is populated, and `raw_response.txt` exists.
+2.  **Backend Failure Simulation:** Manually corrupt the `vllm` binary inside the benchmark process before launching. Verify the runner detects the binary path as invalid (via `LLAMA_CPP_BACKEND` check) and defaults to CPU, logs the warning, and completes successfully without crashing.
+3.  **Missing Monitor:** Unregister or remove the `benchmark_monitor.py` file. Execute the run. Verify `metrics.csv` is empty (or contains only headers) and `analysis.json` status is "success" (or "monitor_failure" depending on implementation choice, but preferably "success" with empty metrics).
+4.  **Prompt with Spaces:** Create a `benchmark.yaml` where the `prompt` field contains multiple newlines or spaces. Execute the run. Verify the runner handles the YAML parsing correctly and the benchmark process receives the prompt correctly.
+5.  **Partial Output (OOM):** Run a heavy workload that causes OOM. Verify `analysis.json` status is "failure" (or "monitor_failure") and `raw_response.txt` does not contain the crash message (to prevent masking the OOM in the final file), but `metrics.csv` is empty.
+6.  **Changed Prompt Hash:** Execute two runs. Run 1 uses `prompt_a.txt`, Run 2 uses `prompt_b.txt`. Verify the `tuple` in `analysis.json` includes the specific prompt used in the successful run, proving the runner distinguishes runs based on the prompt hash.
+
+---
+
+## 6. Pre-merge Review
+
+### Flaw 1: Mixing Results
+*   **Risk:** If the user runs the benchmark twice with different prompts or contexts, the runner might accidentally merge metrics or report a mixed state, misleading the user about which configuration produced which results.
+*   **Fix:** Implement strict configuration locking in the `benchmark_runner.py` initialization phase. If the `context` or `limit` parameters in `benchmark.yaml` differ from the *current* active run's parameters, raise a `ConfigurationMismatch` exception before spawning the process, effectively forcing a new run or an error. The `run_id` must be derived from the *entire* configuration bundle at launch, not just the first run.
+
+### Flaw 2: Silent OOM Masking
+*   **Risk:** If the benchmark process OOMs, it might exit cleanly without writing the crash message to `raw_response.txt`. The runner might then try to parse a clean but empty or truncated file, reporting "success" when the user likely ran out of memory.
+*   **Fix:** Ensure the benchmark worker writes the *last* visible output to `raw_response.txt` *before* the process exits (using a buffer or file descriptor tracking). Do not rely solely on the process exit code for file content; use file content inspection as the primary signal for OOM vs. Crash.
+
+### Flaw 3: Incomplete Metric File
+*   **Risk:** If the benchmark crashes mid-run, the `metrics.csv` file might be truncated or contain stale data, leading the parser to read garbage or incorrect metrics.
+*   **Fix:** Add a specific check in the finalization phase: `if os.path.exists('metrics.csv') and os.path.getsize('metrics.csv') < estimated_min_size: mark as incomplete`. Do not attempt to "complete" the file; treat it as a hard failure state for the user to investigate manually.
