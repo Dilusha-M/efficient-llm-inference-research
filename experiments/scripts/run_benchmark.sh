@@ -212,6 +212,8 @@ LLAMA_CMD=(
     --perf
     -no-cnv
     -st
+    --simple-io
+    --no-display-prompt
     -p "$PROMPT_TEXT"
 )
 
@@ -254,6 +256,8 @@ while [ "$RUN_INDEX" -le "$RUNS" ]; do
     SYSTEM_INFO="$RUN_DIR/system-info.txt"
     GPU_MONITOR="$RUN_DIR/gpu-monitor.csv"
     SYSTEM_MONITOR="$RUN_DIR/system-monitor.csv"
+    TTFT_FILE="$RUN_DIR/time-to-first-token.txt"
+    PID_FILE="$RUN_DIR/llama.pid"
     STATUS="success"
     ERROR_MESSAGE=""
 
@@ -264,9 +268,16 @@ while [ "$RUN_INDEX" -le "$RUNS" ]; do
 
     echo "Starting run $RUN_NO..."
 
-    "${LLAMA_CMD[@]}" > "$RESULT" 2>&1 < /dev/null &
+    python3 "$BASE/experiments/scripts/run_llama_timed.py" --ttft-file "$TTFT_FILE" --pid-file "$PID_FILE" -- "${LLAMA_CMD[@]}" > "$RESULT" 2>&1 &
 
-    LLAMA_PID=$!
+    WRAPPER_PID=$!
+    for _ in $(seq 1 100); do
+        [ -s "$PID_FILE" ] && break
+        kill -0 "$WRAPPER_PID" 2>/dev/null || break
+        sleep 0.01
+    done
+    LLAMA_PID=$(cat "$PID_FILE" 2>/dev/null || true)
+    [ -n "$LLAMA_PID" ] || LLAMA_PID="$WRAPPER_PID"
 
     "$BASE/experiments/scripts/collect_gpu_stats.sh" --pid "$LLAMA_PID" --out "$GPU_MONITOR" --interval "$INTERVAL" &
     GPU_MONITOR_PID=$!
@@ -274,7 +285,7 @@ while [ "$RUN_INDEX" -le "$RUNS" ]; do
     "$BASE/experiments/scripts/collect_system_stats.sh" --pid "$LLAMA_PID" --out "$SYSTEM_INFO" --samples "$SYSTEM_MONITOR" --interval "$INTERVAL" &
     SYS_MONITOR_PID=$!
 
-    if ! wait "$LLAMA_PID"; then
+    if ! wait "$WRAPPER_PID"; then
         STATUS="failure"
         ERROR_MESSAGE=$(python3 -c 'import sys; from pathlib import Path; p=Path(sys.argv[1]); lines=p.read_text(errors="replace").splitlines() if p.exists() else []; print(" ".join(lines[-20:]))' "$RESULT")
     fi
@@ -284,6 +295,8 @@ while [ "$RUN_INDEX" -le "$RUNS" ]; do
 
     END_NS=$(date +%s%N)
     TOTAL_TIME=$(awk -v start="$START_NS" -v end="$END_NS" 'BEGIN { printf "%.3f", (end-start)/1000000000 }')
+    TTFT=$(awk 'NF { print $1; exit }' "$TTFT_FILE" 2>/dev/null || true)
+    [ -n "$TTFT" ] || TTFT="null"
     MODEL_LOAD_TIME=$(python3 -c 'import re,sys; from pathlib import Path; text=Path(sys.argv[1]).read_text(errors="replace") if Path(sys.argv[1]).exists() else ""; m=re.search(r"load time\s*=\s*([0-9.]+)\s*ms", text, re.I); print(f"{float(m.group(1))/1000:.3f}" if m else "null")' "$RESULT")
 
     CPU_MODEL=$(lscpu 2>/dev/null | awk -F: '/Model name:/ { sub(/^[ \t]+/, "", $2); print $2; exit }')
@@ -326,7 +339,7 @@ while [ "$RUN_INDEX" -le "$RUNS" ]; do
         echo "  \"temperature\": $TEMP,"
         echo "  \"model_load_time\": $MODEL_LOAD_TIME,"
         echo "  \"total_time\": $TOTAL_TIME,"
-        echo "  \"time_to_first_token\": null,"
+        echo "  \"time_to_first_token\": $TTFT,"
         echo "  \"cpu\": $(printf '%s' "$CPU_MODEL" | json_escape),"
         echo "  \"ram\": $(printf '%s' "$RAM_TOTAL" | json_escape),"
         echo "  \"gpu\": $(printf '%s' "$GPU_NAME" | json_escape),"
