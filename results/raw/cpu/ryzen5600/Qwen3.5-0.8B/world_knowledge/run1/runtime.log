@@ -1,0 +1,68 @@
+warning: no usable GPU found, --gpu-layers option will be ignored
+warning: one possible reason is that llama.cpp was compiled without GPU support
+warning: consult docs/build.md for compilation instructions
+
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b10110-8f5ab832c
+model      : /home/dilusha/llm-research/models/Qwen/Qwen3.5-0.8B-GGUF/Qwen3.5-0.8B-Q8_0.gguf
+ftype      : Q8_0
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> Answer all 30 questions using only your existing knowledge. Do not browse or use tools.
+
+Output exactly one line per question in this format:
+01. answer
+02. answer
+
+Keep the question number, answer every question, and provide only the shortest correct answer. Do not add explanations, confidence statements, headings, bullets, or extra lines. For a person, give the commonly used full name; for a place, give the commonly used English name; for a year or unit, give the standard form.
+
+01. What is th ... (truncated)
+
+[Start thinking]
+
+Thinking Process:
+
+1.  **Analyze the Request:**
+    *   Task: Answer 30 questions.
+    *   Constraints:
+        *   Do not browse or use tools.
+        *   Output exactly one line per question in the format: `01. answer`.
+        *   Keep the question number.
+        *   Provide only the shortest correct answer.
+        *   No explanations, confidence statements, headings, bullets, or extra lines.
+        *   For people, use common full name. For places, use common English name. For units, use standard form.
+    *   Input: 30 specific questions.
+
+2.  **Draft Answers:**
+
+    *   01. Capital city of Australia: Canberra.
+    *   02. Chemical symbol for sodium: Na.
+    *   03. Red Planet: Mars.
+    *   04. Largest ocean: Pacific.
+    *   05. Main official language of Brazil: Portuguese.
+    *   06. Organ pumps blood through body: Heart (Pumps blood through the heart).
+    *   07. SI unit of electric current:
+
+[ Prompt: 74.2 t/s | Generation: 21.1 t/s ]
+
+
+Exiting...

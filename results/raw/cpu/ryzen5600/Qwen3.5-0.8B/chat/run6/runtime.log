@@ -1,0 +1,55 @@
+warning: no usable GPU found, --gpu-layers option will be ignored
+warning: one possible reason is that llama.cpp was compiled without GPU support
+warning: consult docs/build.md for compilation instructions
+
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b10110-8f5ab832c
+model      : /home/dilusha/llm-research/models/Qwen/Qwen3.5-0.8B-GGUF/Qwen3.5-0.8B-Q8_0.gguf
+ftype      : Q8_0
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> You are answering a graduate-level systems question. Give a technically precise answer, but keep it compact enough to be useful to an engineer making a hardware decision.
+
+Scenario:
+A 7B decoder-only model is served on a 6 GB consumer GPU with 32 GB system RAM. The model weights fit on the GPU, but the key-value (KV) cache does not always fit there. A user sends a 2,000-token prompt and requests 300 generated tokens. The system reports excellent prompt-processing throughput but becomes much slow ... (truncated)
+
+[Start thinking]
+
+Here's a thinking process that leads to the suggested answer:
+
+1.  **Analyze the Request:**
+    *   **Role:** Graduate-level systems question, concise, technically precise, engineer-friendly.
+    *   **Scenario:** 7B decoder-only model on 6GB GPU x 32GB RAM. 2000-token prompt, 300 tokens generated. Prompt throughput is good, conversation slows down as context grows. 2000-token prompt, 300 tokens generated.
+    *   **Task:** Explain what's happening and recommend investigation steps.
+    *   **Constraints:**
+        1.  Trace lifecycle of KV cache (prompt -> token-by-token).
+        2.  Explain resource stress differences (prompt vs. decoding).
+        3.  Analyze context expansion (2000 -> 8000) effects.
+        4.  Distinguish general truths vs. implementation details (precision, offload, etc.).
+        5.  Propose 3 measurements/comparisons.
+        6.  Include a small numerical example (prompt/decode ratio).
+        7.  *Crucial:* Do
+
+[ Prompt: 75.4 t/s | Generation: 21.4 t/s ]
+
+
+Exiting...
