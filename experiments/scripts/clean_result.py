@@ -11,6 +11,9 @@ from pathlib import Path
 
 ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 TIMING_RE = re.compile(r"\[\s*Prompt:.*?\|\s*Generation:.*?\]", re.IGNORECASE)
+THINKING_START_RE = re.compile(r"\[(?:Start|Begin)\s+thinking\]", re.IGNORECASE)
+THINKING_END_RE = re.compile(r"(?:\[(?:End|Finish)\s+thinking\]|<\/think>|<\\/think>)", re.IGNORECASE)
+ANSWER_START_RE = re.compile(r"\[(?:Start|Begin)\s+(?:answer|response)\]", re.IGNORECASE)
 
 
 def main() -> int:
@@ -24,14 +27,21 @@ def main() -> int:
     raw = args.runtime_log.read_text(encoding="utf-8", errors="replace")
     raw = ANSI_RE.sub("", raw).replace("\b", "")
 
-    marker = re.search(r"\[Start thinking\]", raw, re.IGNORECASE)
+    marker = THINKING_START_RE.search(raw)
     if marker:
         remainder = raw[marker.end():]
-        end_marker = re.search(r"(?:\[End thinking\]|</think>|<\/think>)", remainder, re.IGNORECASE)
-        response = remainder[end_marker.end():] if end_marker else ""
+        end_marker = THINKING_END_RE.search(remainder)
+        if end_marker:
+            response = remainder[end_marker.end():]
+        else:
+            # Preserve output when generation stops before a closing thinking marker.
+            response = remainder
     else:
         prompt_position = raw.find(prompt)
         response = raw[prompt_position + len(prompt):] if prompt_position >= 0 else raw
+        answer_marker = ANSWER_START_RE.search(response)
+        if answer_marker:
+            response = response[answer_marker.end():]
     response = TIMING_RE.sub("", response)
     response = re.sub(r"\n\s*Exiting\.\.\.\s*$", "", response, flags=re.IGNORECASE)
     response = response.strip()

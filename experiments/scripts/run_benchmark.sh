@@ -218,6 +218,7 @@ LLAMA_CMD=(
     --threads "$THREADS"
     --temp "$TEMP"
     --perf
+    --reasoning off
     --reasoning-budget 0
     -no-cnv
     -st

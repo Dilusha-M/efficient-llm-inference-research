@@ -8,6 +8,13 @@ trap 'rm -rf "$TMP_ROOT"' EXIT
 
 mkdir -p "$TMP_ROOT/experiments/configs" "$TMP_ROOT/experiments/prompts" "$TMP_ROOT/experiments/scripts"
 mkdir -p "$TMP_ROOT/llama.cpp-builds/build-cpu/bin" "$TMP_ROOT/models/Test Model-GGUF" "$TMP_ROOT/logs"
+cp "$REPO_ROOT/experiments/scripts/run_llama_timed.py" "$TMP_ROOT/experiments/scripts/run_llama_timed.py"
+cp "$REPO_ROOT/experiments/scripts/clean_result.py" "$TMP_ROOT/experiments/scripts/clean_result.py"
+cat > "$TMP_ROOT/experiments/scripts/collect_cpu_stats.sh" <<SH
+#!/usr/bin/env bash
+exit 0
+SH
+chmod +x "$TMP_ROOT/experiments/scripts/collect_cpu_stats.sh"
 
 touch "$TMP_ROOT/models/Test Model-GGUF/Test Model-Q4_K_M.gguf"
 cat > "$TMP_ROOT/experiments/prompts/chat.txt" <<'PROMPT'
@@ -37,11 +44,16 @@ set -euo pipefail
 : "${TEST_LLAMA_LOG_DIR:?}"
 seen_prompt=0
 seen_single_turn=0
+seen_reasoning_off=0
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
         -st|--single-turn)
             seen_single_turn=1
+            ;;
+        --reasoning)
+            shift
+            [ "${1:-}" = "off" ] && seen_reasoning_off=1
             ;;
         -p)
             seen_prompt=$((seen_prompt + 1))
@@ -58,6 +70,7 @@ done
 
 printf '%s' "$seen_prompt" > "$TEST_LLAMA_LOG_DIR/prompt_count"
 printf '%s' "$seen_single_turn" > "$TEST_LLAMA_LOG_DIR/single_turn"
+printf '%s' "$seen_reasoning_off" > "$TEST_LLAMA_LOG_DIR/reasoning_off"
 if [ "$seen_single_turn" != "1" ]; then
     exit 3
 fi
@@ -113,6 +126,11 @@ if [ "$(cat "$TMP_ROOT/logs/single_turn")" != "1" ]; then
     exit 1
 fi
 
+if [ "$(cat "$TMP_ROOT/logs/reasoning_off")" != "1" ]; then
+    echo "llama-cli was not instructed to disable reasoning" >&2
+    exit 1
+fi
+
 if [ "$(cat "$TMP_ROOT/logs/prompt.txt")" != "$EXPECTED_PROMPT" ]; then
     echo "llama-cli prompt argument did not match prompt file contents" >&2
     exit 1
@@ -125,5 +143,11 @@ fi
 
 if [ ! -f "$TMP_ROOT/results/raw/cpu/test-hw/Test_Model/chat/run1/result.txt" ]; then
     echo "Benchmark did not write result.txt" >&2
+    exit 1
+fi
+
+if ! grep -q '^generated response$' "$TMP_ROOT/results/raw/cpu/test-hw/Test_Model/chat/run1/result.txt"; then
+    echo "result.txt did not preserve the complete generated response" >&2
+    cat "$TMP_ROOT/results/raw/cpu/test-hw/Test_Model/chat/run1/result.txt" >&2
     exit 1
 fi
