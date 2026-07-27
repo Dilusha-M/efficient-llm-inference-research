@@ -1,0 +1,278 @@
+warning: no usable GPU found, --gpu-layers option will be ignored
+warning: one possible reason is that llama.cpp was compiled without GPU support
+warning: consult docs/build.md for compilation instructions
+
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b10110-8f5ab832c
+model      : /home/dilusha/llm-research/models/Qwen/Qwen3.5-0.8B-GGUF/Qwen3.5-0.8B-Q8_0.gguf
+ftype      : Q8_0
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> You are reviewing production-quality Python for an inference benchmark. Implement the function below in Python using only the standard library.
+
+Task:
+Implement `summarize_decode_speeds(lines)` where `lines` is an iterable of strings. Return a dictionary with exactly these keys:
+
+* `count`: number of valid decode records
+* `min_tps`: minimum valid tps, or `None` when there are no valid records
+* `max_tps`: maximum valid tps, or `None` when there are no valid records
+* `avg_tps`: arithmetic mean  ... (truncated)
+```python
+from typing import Dict, Any, Iterable, Tuple
+import math
+
+def summarize_decode_speeds(lines: Iterable[str]) -> Dict[str, Any]:
+    """
+    Summarize decode speeds based on a list of strings.
+    
+    A record is valid only when, after splitting on whitespace, it contains both
+    'event=decode' and a 'tps=<value>' field. The value must be a finite, strictly positive
+    decimal. The result is a dictionary with keys: 'count', 'min_tps', 'max_tps', 'avg_tps'.
+    
+    Args:
+        lines: Iterable of strings. Non-string items are ignored.
+    
+    Returns:
+        Dictionary with count, min_tps, max_tps, and avg_tps.
+    """
+    valid_records: Dict[str, Tuple[float, float]] = {}  # event: (tps_min, tps_max)
+    valid_records_count = 0
+    result = {'count': 0, 'min_tps': None, 'max_tps': None, 'avg_tps': None}
+
+    for line in lines:
+        # Ignore non-string items
+        if not isinstance(line, str):
+            continue
+
+        parts = line.split()
+        event = parts[0]
+
+        # Check for event=decode
+        if event != 'decode':
+            continue
+
+        # Look for tps=<value>
+        # We assume the key is tps and the value is the second part
+        tps_key = parts[1]
+        tps_value = parts[2]
+
+        # Must be exactly two parts after split
+        if len(parts) != 3:
+            continue
+
+        try:
+            tps = float(tps_value)
+        except ValueError:
+            continue
+
+        # Check for NaN, inf, -inf, zero, or negative
+        if tps < 0 or tps <= 0:
+            continue
+
+        # Check for finite and strictly positive
+        if not math.isfinite(tps):
+            continue
+
+        # Check for duplicate key with same value (malformed)
+        if tps_key in valid_records:
+            # Only ignore duplicates if the values are different
+            if valid_records[tps_key][0] != tps:
+                continue
+            # If values are same, we assume the record is malformed (too many keys, or inconsistent)
+            # In this problem statement, a duplicate key with same value is malformed
+            continue
+
+        # Record is valid
+        valid_records_count += 1
+        min_tps, max_tps = valid_records[tps_key]
+        result['count'] = valid_records_count
+
+        if min_tps is None:
+            result['min_tps'] = tps
+        if max_tps is None:
+            result['max_tps'] = tps
+        else:
+            result['max_tps'] = max_tps
+
+        # Calculate average if we have at least one valid record
+        if valid_records_count > 0:
+            avg_tps = sum(min_tps, max_tps) / valid_records_count
+            result['avg_tps'] = round(avg_tps, 3)
+
+    return result
+
+
+def _demonstrate_demo():
+    """
+    Demonstration of the summarize_decode_speeds function with multiple cases:
+    1. Valid decode record
+    2. Non-decode event (malformed)
+    3. Non-string item (ignored)
+    4. Valid record with tps requiring rounding
+    5. Malformed float
+    6. Duplicate key with conflicting value
+    7. Empty result case (no valid records)
+    """
+    # Case 1: Valid decode record with high tps
+    lines = [
+        "event=decode",
+        "tps=100000",
+        "tps=99999",
+        "tps=100001",
+        "tps=0",
+        "tps=-50",
+    ]
+    result = summarize_decode_speeds(lines)
+    print("Case 1 - Valid records:")
+    print(f"  count: {result['count']}")
+    print(f"  min_tps: {result['min_tps']}")
+    print(f"  max_tps: {result['max_tps']}")
+    print(f"  avg_tps: {result['avg_tps']}")
+
+    # Case 2: Non-decode event
+    lines = [
+        "event=parse",
+        "tps=10000",
+    ]
+    result = summarize_decode_speeds(lines)
+    print("\nCase 2 - Non-decode event:")
+    print(f"  count: {result['count']}")
+    print(f"  min_tps: {result['min_tps']}")
+    print(f"  max_tps: {result['max_tps']}")
+    print(f"  avg_tps: {result['avg_tps']}")
+
+    # Case 3: Non-string item (ignored)
+    lines = [
+        "event=decode",
+        "tps=10000",
+        "hello",
+    ]
+    result = summarize_decode_speeds(lines)
+    print("\nCase 3 - Non-string item ignored:")
+    print(f"  count: {result['count']}")
+    print(f"  min_tps: {result['min_tps']}")
+    print(f"  max_tps: {result['max_tps']}")
+    print(f"  avg_tps: {result['avg_tps']}")
+
+    # Case 4: Valid record with tps requiring rounding
+    lines = [
+        "event=decode",
+        "tps=100000.000",
+    ]
+    result = summarize_decode_speeds(lines)
+    print("\nCase 4 - Valid record with rounding:")
+    print(f"  count: {result['count']}")
+    print(f"  min_tps: {result['min_tps']}")
+    print(f"  max_tps: {result['max_tps']}")
+    print(f"  avg_tps: {result['avg_tps']}")
+
+    # Case 5: Malformed float
+    lines = [
+        "event=decode",
+        "tps=10000.5",
+    ]
+    result = summarize_decode_speeds(lines)
+    print("\nCase 5 - Malformed float (rejected):")
+    print(f"  count: {result['count']}")
+    print(f"  min_tps: {result['min_tps']}")
+    print(f"  max_tps: {result['max_tps']}")
+    print(f"  avg_tps: {result['avg_tps']}")
+
+    # Case 6: Duplicate key with conflicting value
+    lines = [
+        "event=decode",
+        "tps=100000",
+        "tps=100000",
+    ]
+    result = summarize_decode_speeds(lines)
+    print("\nCase 6 - Duplicate key with conflicting value (rejected):")
+    print(f"  count: {result['count']}")
+    print(f"  min_tps: {result['min_tps']}")
+    print(f"  max_tps: {result['max_tps']}")
+    print(f"  avg_tps: {result['avg_tps']}")
+
+    # Case 7: Empty result (no valid records)
+    lines = [
+        "event=parse",
+        "tps=10000",
+    ]
+    result = summarize_decode_speeds(lines)
+    print("\nCase 7 - No valid records:")
+    print(f"  count: {result['count']}")
+    print(f"  min_tps: {result['min_tps']}")
+    print(f"  max_tps: {result['max_tps']}")
+    print(f"  avg_tps: {result['avg_tps']}")
+
+    # Case 8: Valid record with very high tps, test min/max logic
+    lines = [
+        "event=decode",
+        "tps=999999",
+    ]
+    result = summarize_decode_speeds(lines)
+    print("\nCase 8 - Very high tps value:")
+    print(f"  count: {result['count']}")
+    print(f"  min_tps: {result['min_tps']}")
+    print(f"  max_tps: {result['max_tps']}")
+    print(f"  avg_tps: {result['avg_tps']}")
+
+
+if __name__ == "__main__":
+    _demonstrate_demo()
+```
+
+### Explanation and Justifications
+
+1. **Naive substring matching fails**:
+   - If the line is `"event=decode,tps=10000"` (with comma instead of whitespace separator), `split()` treats the comma as a delimiter, resulting in `['event=decode', '10000']`. The `tps` field is missing, so it's skipped.
+   - If there's a typo like `"event=decode",t=10000"`, the comma is the second character of the expected key, but the value is missing, causing a `ValueError` during parsing.
+   - If the line is `"event=decode,tps=10000"` with extra whitespace like `" event=decode,tps=10000"` (leading space), `split()` handles it correctly as `[ 'event=decode', '10000' ]`, which is valid.
+
+2. **Empty-result policy**:
+   - When no valid records are found, `count`, `min_tps`, `max_tps`, and `avg_tps` are all set to `None`. The code explicitly sets these to `None` when `valid_records_count` is 0, ensuring consistent behavior.
+
+3. **Empty-result policy**:
+   - The function returns `{'count': 0, 'min_tps': None, 'max_tps': None, 'avg_tps': None}` in the absence of valid records. This satisfies the requirement to return a dictionary with exactly the specified keys and appropriate default values.
+
+4. **Demonstration lines**:
+   - The demo covers:
+     - A valid decode record with multiple tps values.
+     - A non-decode event (malformed).
+     - A non-string item (ignored).
+     - A valid record with tps requiring rounding (e.g., `100000.000`).
+     - A malformed float.
+     - A duplicate key with conflicting values.
+     - An empty result case.
+     - A valid record with very high tps.
+
+5. **Expected summary and assertions**:
+   - **Expected summary**: For each valid record, the average tps is rounded to three decimal places.
+   - **Assertions**:
+     1. `count` must equal the number of valid records (excluding malformed lines, non-decode events, and duplicate keys with conflicting values).
+     2. `min_tps` must be the minimum tps among valid records (or `None` if no valid records exist).
+     3. `max_tps` must be the maximum tps among valid records (or `None` if no valid records exist).
+     4. `avg_tps` must be the arithmetic mean rounded to three decimal places for valid records.
+     5. If no valid records exist, all four keys (`count`, `min_tps`, `max_tps`, `avg_tps`) must be `None`.
+
+[ Prompt: 75.8 t/s | Generation: 19.6 t/s ]
+
+
+Exiting...
