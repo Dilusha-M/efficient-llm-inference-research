@@ -44,6 +44,7 @@ Workload categories:
 - `summarization`
 - `batch`
 - `agentic`
+- `world_knowledge`
 
 Each raw run directory contains:
 - `result.txt`
@@ -52,7 +53,16 @@ Each raw run directory contains:
 - `gpu-monitor.csv`
 - `system-monitor.csv`
 
-Manual quality notes are stored separately under `results/quality/<hardware>/<model>/<workload>/evaluation.md`. Scoring is intentionally manual and is not automated by the framework.
+Manual quality notes are stored separately under `results/quality/<hardware>/<model>/<workload>/evaluation.md`. The `world_knowledge` workload is additionally machine-scoreable: its fixed questions, answer aliases, and scoring rules live under `experiments/world_knowledge/`.
+
+The world-knowledge workload uses 30 stable, closed-form questions split into easy, medium, and hard tiers. The prompt requires one numbered answer per line, with no explanation. Score a completed raw result with:
+
+```bash
+bash experiments/scripts/run_benchmark.sh --backend cpu --hardware <hardware> --model <MODEL_ALIAS> --workload world_knowledge --temp 0.0
+python3 experiments/scripts/score_world_knowledge.py results/raw/cpu/<hardware>/<model>/world_knowledge/run1/result.txt
+```
+
+Report overall accuracy and accuracy by tier. Keep the prompt, answer key, model, quantization, temperature, and generation settings fixed when comparing model sizes. The score measures answer accuracy on this small probe; it is not a general intelligence score.
 
 ## Collected Metrics
 

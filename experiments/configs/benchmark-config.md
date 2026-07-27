@@ -37,6 +37,10 @@ Measured:
 - VRAM usage
 - Power usage (where available)
 
+Quality probe:
+- `world_knowledge`: 30 numbered, closed-form questions with easy/medium/hard tiers
+- Score with `experiments/scripts/score_world_knowledge.py`
+
 
 ## Repetition
 

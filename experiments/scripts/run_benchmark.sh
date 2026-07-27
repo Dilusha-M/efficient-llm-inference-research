@@ -51,7 +51,7 @@ DRY_RUN=0
 usage() {
     cat <<'USAGE'
 Usage:
-  ./run_benchmark.sh --backend <cpu|cuda|vulkan> --hardware <label> --model <MODEL_ALIAS> --workload <chat|coding|summarization|batch|agentic> [options]
+  ./run_benchmark.sh --backend <cpu|cuda|vulkan> --hardware <label> --model <MODEL_ALIAS> --workload <chat|coding|summarization|batch|agentic|world_knowledge> [options]
 
 Options:
   --runs N             Number of repeated runs. Default: 3
@@ -176,7 +176,7 @@ if [ -z "$GPU_LAYERS" ]; then
 fi
 
 case "$WORKLOAD" in
-    chat|coding|summarization|batch|agentic)
+    chat|coding|summarization|batch|agentic|world_knowledge)
         PROMPT_FILE="$PROMPT_DIR/$WORKLOAD.txt"
         ;;
     *)
@@ -186,7 +186,7 @@ esac
 
 if [ "$CONTEXT_EXPLICIT" -eq 0 ]; then
     case "$WORKLOAD" in
-        coding|summarization|batch|agentic) CONTEXT=$((DEFAULT_CONTEXT * 2)) ;;
+        coding|summarization|batch|agentic|world_knowledge) CONTEXT=$((DEFAULT_CONTEXT * 2)) ;;
     esac
 fi
 
