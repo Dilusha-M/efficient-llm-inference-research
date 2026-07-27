@@ -192,6 +192,7 @@ MODEL_PATH="${!MODEL_ALIAS:-}"
 [ -n "$MODEL_PATH" ] || die "Unknown model alias in models.conf: $MODEL_ALIAS"
 [ -f "$MODEL_PATH" ] || die "Model file not found: $MODEL_PATH"
 
+PROMPT_TEXT=$(cat "$PROMPT_FILE")
 MODEL_FILE=$(basename "$MODEL_PATH")
 MODEL_DIR=$(basename "$(dirname "$MODEL_PATH")")
 MODEL_LABEL=$(safe_name "${MODEL_DIR%-GGUF}")
@@ -210,7 +211,8 @@ LLAMA_CMD=(
     --temp "$TEMP"
     --perf
     -no-cnv
-    -f "$PROMPT_FILE"
+    -st
+    -p "$PROMPT_TEXT"
 )
 
 echo "Benchmark configuration"
@@ -262,7 +264,7 @@ while [ "$RUN_INDEX" -le "$RUNS" ]; do
 
     echo "Starting run $RUN_NO..."
 
-    "${LLAMA_CMD[@]}" > "$RESULT" 2>&1 &
+    "${LLAMA_CMD[@]}" > "$RESULT" 2>&1 < /dev/null &
 
     LLAMA_PID=$!
 
