@@ -32,6 +32,8 @@ CSV_COLUMNS = [
     "vram_usage",
     "gpu_power",
     "gpu_temperature",
+    "cpu_power",
+    "cpu_temperature",
     "status",
 ]
 
@@ -204,7 +206,7 @@ def output_path(base: Path, requested: str | None, overwrite: bool) -> Path:
 
 def build_row(run_dir: Path, debug: bool = False) -> dict:
     metadata = read_json(run_dir / "metadata.json")
-    perf = parse_perf(run_dir / "result.txt", debug=debug)
+    perf = parse_perf(run_dir / ("runtime.log" if (run_dir / "runtime.log").exists() else "result.txt"), debug=debug)
 
     # TTFT requires streaming token timestamps and is not available from llama.cpp perf summary.
     time_to_first_token = metadata_value(metadata, "time_to_first_token")
@@ -228,6 +230,8 @@ def build_row(run_dir: Path, debug: bool = False) -> dict:
         "vram_usage": max_value(run_dir / "gpu-monitor.csv", "memory_used_mb"),
         "gpu_power": avg_value(run_dir / "gpu-monitor.csv", "power_w"),
         "gpu_temperature": avg_value(run_dir / "gpu-monitor.csv", "temperature_c"),
+        "cpu_power": avg_value(run_dir / "cpu-monitor.csv", "cpu_power_w"),
+        "cpu_temperature": avg_value(run_dir / "cpu-monitor.csv", "cpu_temperature_c"),
         "status": metadata.get("status", ""),
     }
 

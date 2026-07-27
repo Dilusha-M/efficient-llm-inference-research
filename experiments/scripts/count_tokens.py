@@ -12,7 +12,7 @@ from pathlib import Path
 
 
 TOTAL_RE = re.compile(r"Total number of tokens:\s*(\d+)")
-GENERATED_RE = re.compile(r"\[Start thinking\](.*?)(?=\[\s*Prompt:\s*|\Z)", re.IGNORECASE | re.DOTALL)
+GENERATED_RE = re.compile(r"(?:\[Start thinking\]|Final model response\s*)(.*?)(?=\[\s*Prompt:\s*|\Z)", re.IGNORECASE | re.DOTALL)
 
 
 def token_count(tokenizer: Path, model: Path, text: str) -> int | None:

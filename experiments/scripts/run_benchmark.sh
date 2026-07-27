@@ -40,6 +40,7 @@ MODEL_ALIAS=""
 WORKLOAD=""
 RUNS="$DEFAULT_RUNS"
 CONTEXT="$DEFAULT_CONTEXT"
+CONTEXT_EXPLICIT=0
 TOKENS="$DEFAULT_TOKENS"
 TEMP="$DEFAULT_TEMP"
 GPU_LAYERS=""
@@ -106,6 +107,7 @@ while [ "$#" -gt 0 ]; do
             ;;
         --context)
             CONTEXT="${2:-}"
+            CONTEXT_EXPLICIT=1
             shift 2
             ;;
         --tokens)
@@ -182,6 +184,12 @@ case "$WORKLOAD" in
         ;;
 esac
 
+if [ "$CONTEXT_EXPLICIT" -eq 0 ]; then
+    case "$WORKLOAD" in
+        coding|summarization|batch|agentic) CONTEXT=$((DEFAULT_CONTEXT * 2)) ;;
+    esac
+fi
+
 [ -x "$LLAMA" ] || die "llama-cli not found or not executable: $LLAMA"
 [ -f "$PROMPT_FILE" ] || die "Missing prompt file: $PROMPT_FILE"
 [ -n "$THREADS" ] || die "threads must not be empty"
@@ -210,6 +218,7 @@ LLAMA_CMD=(
     --threads "$THREADS"
     --temp "$TEMP"
     --perf
+    --reasoning-budget 0
     -no-cnv
     -st
     --simple-io
@@ -254,10 +263,12 @@ while [ "$RUN_INDEX" -le "$RUNS" ]; do
     mkdir -p "$RUN_DIR"
 
     RESULT="$RUN_DIR/result.txt"
+    RUNTIME_LOG="$RUN_DIR/runtime.log"
     METADATA="$RUN_DIR/metadata.json"
     SYSTEM_INFO="$RUN_DIR/system-info.txt"
     GPU_MONITOR="$RUN_DIR/gpu-monitor.csv"
     SYSTEM_MONITOR="$RUN_DIR/system-monitor.csv"
+    CPU_MONITOR="$RUN_DIR/cpu-monitor.csv"
     TTFT_FILE="$RUN_DIR/time-to-first-token.txt"
     PID_FILE="$RUN_DIR/llama.pid"
     STATUS="success"
@@ -270,7 +281,7 @@ while [ "$RUN_INDEX" -le "$RUNS" ]; do
 
     echo "Starting run $RUN_NO..."
 
-    python3 "$BASE/experiments/scripts/run_llama_timed.py" --ttft-file "$TTFT_FILE" --pid-file "$PID_FILE" -- "${LLAMA_CMD[@]}" > "$RESULT" 2>&1 &
+    python3 "$BASE/experiments/scripts/run_llama_timed.py" --ttft-file "$TTFT_FILE" --pid-file "$PID_FILE" -- "${LLAMA_CMD[@]}" > "$RUNTIME_LOG" 2>&1 &
 
     WRAPPER_PID=$!
     for _ in $(seq 1 100); do
@@ -287,13 +298,20 @@ while [ "$RUN_INDEX" -le "$RUNS" ]; do
     "$BASE/experiments/scripts/collect_system_stats.sh" --pid "$LLAMA_PID" --out "$SYSTEM_INFO" --samples "$SYSTEM_MONITOR" --interval "$INTERVAL" &
     SYS_MONITOR_PID=$!
 
+    "$BASE/experiments/scripts/collect_cpu_stats.sh" --pid "$LLAMA_PID" --out "$CPU_MONITOR" --interval "$INTERVAL" &
+    CPU_MONITOR_PID=$!
+
     if ! wait "$WRAPPER_PID"; then
         STATUS="failure"
-        ERROR_MESSAGE=$(python3 -c 'import sys; from pathlib import Path; p=Path(sys.argv[1]); lines=p.read_text(errors="replace").splitlines() if p.exists() else []; print(" ".join(lines[-20:]))' "$RESULT")
+        ERROR_MESSAGE=$(python3 -c 'import sys; from pathlib import Path; p=Path(sys.argv[1]); lines=p.read_text(errors="replace").splitlines() if p.exists() else []; print(" ".join(lines[-20:]))' "$RUNTIME_LOG")
     fi
 
     wait "$GPU_MONITOR_PID" 2>/dev/null || true
     wait "$SYS_MONITOR_PID" 2>/dev/null || true
+    wait "$CPU_MONITOR_PID" 2>/dev/null || true
+
+    python3 "$BASE/experiments/scripts/clean_result.py" \
+        --prompt-file "$PROMPT_FILE" --runtime-log "$RUNTIME_LOG" --output "$RESULT"
 
     END_NS=$(date +%s%N)
     TOTAL_TIME=$(awk -v start="$START_NS" -v end="$END_NS" 'BEGIN { printf "%.3f", (end-start)/1000000000 }')
@@ -301,10 +319,10 @@ while [ "$RUN_INDEX" -le "$RUNS" ]; do
     [ -n "$TTFT" ] || TTFT="null"
     TOKEN_COUNTS=$(python3 "$BASE/experiments/scripts/count_tokens.py" \
         --tokenizer "$(dirname "$LLAMA")/llama-tokenize" --model "$MODEL_PATH" \
-        --prompt-file "$PROMPT_FILE" --result "$RESULT" 2>/dev/null || echo "{}")
+        --prompt-file "$PROMPT_FILE" --result "$RUNTIME_LOG" 2>/dev/null || echo "{}")
     PROMPT_TOKENS=$(python3 -c 'import json,sys; value=json.loads(sys.argv[1]).get("prompt_tokens"); print(value if value is not None else "null")' "$TOKEN_COUNTS")
     GENERATED_TOKENS=$(python3 -c 'import json,sys; value=json.loads(sys.argv[1]).get("generated_tokens"); print(value if value is not None else "null")' "$TOKEN_COUNTS")
-    MODEL_LOAD_TIME=$(python3 -c 'import re,sys; from pathlib import Path; text=Path(sys.argv[1]).read_text(errors="replace") if Path(sys.argv[1]).exists() else ""; m=re.search(r"load time\s*=\s*([0-9.]+)\s*ms", text, re.I); print(f"{float(m.group(1))/1000:.3f}" if m else "null")' "$RESULT")
+    MODEL_LOAD_TIME=$(python3 -c 'import re,sys; from pathlib import Path; text=Path(sys.argv[1]).read_text(errors="replace") if Path(sys.argv[1]).exists() else ""; m=re.search(r"load time\s*=\s*([0-9.]+)\s*ms", text, re.I); print(f"{float(m.group(1))/1000:.3f}" if m else "null")' "$RUNTIME_LOG")
 
     CPU_MODEL=$(lscpu 2>/dev/null | awk -F: '/Model name:/ { sub(/^[ \t]+/, "", $2); print $2; exit }')
     RAM_TOTAL=$(awk '/MemTotal:/ { printf "%.0f MB", $2/1024 }' /proc/meminfo 2>/dev/null)
