@@ -1,0 +1,58 @@
+warning: no usable GPU found, --gpu-layers option will be ignored
+warning: one possible reason is that llama.cpp was compiled without GPU support
+warning: consult docs/build.md for compilation instructions
+
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b10110-8f5ab832c
+model      : /home/dilusha/llm-research/models/Qwen/Qwen3.5-0.8B-GGUF/Qwen3.5-0.8B-Q8_0.gguf
+ftype      : Q8_0
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> Summarize the following technical document. Focus on the experimental design, measurement methodology, limitations, and reproducibility implications.
+
+Technical document:
+
+Large language model inference on consumer hardware is constrained by a combination of memory capacity, memory bandwidth, compute throughput, software backend maturity, and workload shape. Unlike training, inference is often dominated by repeated matrix-vector operations during autoregressive decoding. During prompt processing ... (truncated)
+
+[Start thinking]
+
+Here's a thinking process that leads to the suggested summary:
+
+1.  **Understand the Goal:** The user wants a summary of the provided technical document. The focus must be specifically on four key areas: experimental design, measurement methodology, limitations, and reproducibility implications.
+
+2.  **Analyze the Source Document:** I need to extract information related to *experimental design*, *measurement methodology*, *limitations*, and *reproducibility* from the text, while maintaining the specific focus requested.
+
+    *   *Section 1: Experimental Design & Workloads*
+        *   Focus: Different inference patterns (chat, coding, summarization, batch, agentic), fixed prompts, context length, generation limits.
+        *   Note: Different workloads require different strategies.
+
+    *   *Section 2: Measurement Methodology*
+        *   Focus: Separating prompt processing and decoding.
+        *   Tools: `llama.cpp`, hardware labels (CPU/GPU), metadata (RAM, VRAM, OS, etc.).
+        *   Metrics: Prompt evaluation throughput, decode throughput, time to first token, total generation time.
+        *   Raw Output: Preserve stdout/stderr.
+        *   Monitoring:
+
+[ Prompt: 70.4 t/s | Generation: 18.6 t/s ]
+
+
+Exiting...
