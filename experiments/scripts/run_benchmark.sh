@@ -10,8 +10,8 @@ DEFAULT_CONF="$BASE/experiments/configs/default.conf"
 MODELS_CONF="$BASE/experiments/configs/models.conf"
 PROMPT_DIR="$BASE/experiments/prompts"
 RESULTS_RAW="$BASE/results/raw"
-DEFAULT_CONTEXT=4096
-DEFAULT_TOKENS=256
+DEFAULT_CONTEXT=8192
+DEFAULT_TOKENS=-1
 DEFAULT_TEMP=0.7
 DEFAULT_RUNS=3
 DEFAULT_CPU_GPU_LAYERS=0
@@ -56,7 +56,7 @@ Usage:
 Options:
   --runs N             Number of repeated runs. Default: 3
   --context N          llama.cpp context size. Default: 4096
-  --tokens N           Maximum generated tokens. Default: 256
+  --tokens N           Maximum generated tokens; -1 means until EOS or context limit. Default: -1
   --temp FLOAT         Sampling temperature. Default: 0.7
   --threads N          llama.cpp worker threads. Default: configured threads
   --gpu-layers N       Override backend GPU layer offload count.

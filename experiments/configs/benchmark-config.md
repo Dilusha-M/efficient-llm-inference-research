@@ -22,7 +22,7 @@ Context length:
 4096 tokens
 
 Generation length:
-256 tokens
+Until EOS or context limit
 
 Temperature:
 0.7
