@@ -1,0 +1,199 @@
+warning: no usable GPU found, --gpu-layers option will be ignored
+warning: one possible reason is that llama.cpp was compiled without GPU support
+warning: consult docs/build.md for compilation instructions
+
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b10110-8f5ab832c
+model      : /home/dilusha/llm-research/models/Qwen/Qwen3.5-4B-GGUF/Qwen3.5-4B-Q4_K_M.gguf
+ftype      : Q4_K - Medium
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> You are simulating a senior coding-agent design review without external tools, internet access, shell commands, package installation, or file-system inspection. Work only from the specification and artifacts below. Be concrete enough that another engineer could implement and test the design.
+
+Project:
+A research project needs a command-line llama.cpp benchmark runner supporting CPU, CUDA, and Vulkan; model aliases from a configuration file; fixed workload prompts; performance output; hardware me ... (truncated)
+### Requirements and Invariants
+
+**Inputs:**
+*   **Configuration File:** A JSON or YAML file defining `model_path`, `backend` (cpu/cuda/vulkan), `workload` type, and optional overrides for `context`, `n_predict`, `temperature`, and `gpu_layers`.
+*   **Fixed Prompts:** A set of canonical prompt strings for each workload (chat, batch, coding, etc.) stored in the config.
+*   **Environment:** System variables for hardware detection (CPU count, CUDA availability, Vulkan loader presence).
+*   **Run Metadata:** Unique run ID, timestamp, and build/driver version strings.
+
+**Artifacts:**
+*   **`response.txt`**: Raw stdout/stderr captured during execution.
+*   **`metrics.json`**: Structured performance data (tokens/sec, latency, memory usage) if available.
+*   **`run_manifest.json`**: The single source of truth containing the experimental identity tuple.
+
+**Success/Failure States:**
+*   **Success:** The model process exits with code 0 (or expected success code for that workload), `response.txt` contains generated tokens, and `metrics.json` is valid (even if empty).
+*   **Failure:** The model process exits with non-zero code (OOM, timeout, crash), OR `response.txt` is truncated/malformed such that token counting is impossible, OR the `run_manifest.json` cannot be atomically written.
+*   **Partial Success:** The process exits successfully, but the monitor (e.g., `nvidia-smi` or custom tracer) fails or returns no data. This is **not** a run failure; it is a data incompleteness flag.
+
+**Experimental Identity Tuple:**
+Every run must be uniquely identified by a hash combining: `model_path`, `backend`, `hardware_label`, `context`, `n_predict`, `prompt_sha256`, `temperature`, `gpu_layers`, `build_hash`, and `driver_env`. If any element of this tuple changes, the result is invalid for comparison with previous runs.
+
+**Ambiguity to Resolve:**
+*   **Ambiguity:** "Malformed performance output."
+    *   *Resolution:* The specification does not define the exact schema of `metrics.json` or the error codes for `llama.cpp` performance modes. The design must assume the output is a JSON object or a specific delimited text format. If the parser encounters an unknown format, it must treat the run as a **soft failure** (data missing) rather than a hard failure (process died), to prevent discarding valid model generations. The ambiguity lies in determining whether a missing metric field counts as a run failure or just a missing metric. The design will treat missing fields as "missing data" only if the parser explicitly validates the schema; otherwise, it defaults to "missing data" to maximize data retention.
+
+### State Machine
+
+The lifecycle consists of six distinct states:
+
+1.  **IDLE (Initialization):**
+    *   Read config and resolve the Experimental Identity Tuple.
+    *   Validate hardware prerequisites (e.g., if `backend=cuda`, check `cuda` env var).
+    *   Generate `prompt_sha256`. If the hash changes relative to the config's expected hash, abort with error "Prompt mismatch".
+    *   Prepare atomic write location for `run_manifest.json`.
+
+2.  **VALIDATING (Pre-flight Check):**
+    *   Check if `model_path` exists. If not, transition to **ABORT**.
+    *   Check if `response.txt` exists (empty file is okay for first run, but non-empty implies previous run).
+    *   Verify `temperature` and `context` are within bounds.
+
+3.  **EXECUTING (Process Launch):**
+    *   Spawn child process (`llama-cli` or `llama-server`).
+    *   Redirect stdout to `response.txt` (append mode) and stderr to a separate log file.
+    *   Set timeout (default 300s).
+    *   **Transition Logic:**
+        *   *Normal Exit:* Transition to **MONITORING**.
+        *   *Timeout:* Transition to **ABORT**.
+        *   *Crash/Non-zero Exit:* Transition to **ABORT**.
+        *   *Partial Output:* If the process exits with code 0 but `response.txt` size < threshold, transition to **ABORT** (treated as generation failure).
+
+4.  **MONITORING (Data Collection):**
+    *   Attempt to execute hardware monitors (e.g., `nvidia-smi`, `vulkaninfo`, custom C++ tracer).
+    *   **Success:** Append metrics to `metrics.json` (atomic append).
+    *   **Failure:** Do **not** abort the run. Log a warning "Monitor unavailable" and set a flag `monitor_data_missing = true`. Transition to **FINALIZING**.
+    *   *Note:* This satisfies the requirement to distinguish failed model runs from missing optional monitoring data.
+
+5.  **FINALIZING (Artifact Generation):**
+    *   Construct `run_manifest.json`.
+    *   **Atomic Write:** Write to a temporary file (`run_manifest.json.tmp`), then rename to `run_manifest.json`. If rename fails, transition to **ABORT**.
+    *   Generate checksums for `response.txt`.
+
+6.  **COMPLETE or ABORT:**
+    *   **COMPLETE:** Log success. If `monitor_data_missing` was true, log informational warning.
+    *   **ABORT:** Log error. Do not generate final manifest for a failed run. Clean up temporary files.
+
+**Edge Case Handling:**
+*   **OOM/Killed:** The process will exit with signal 13 (SIGKILL) or 137. The state machine treats this as **ABORT**. `response.txt` will likely be truncated, triggering the partial output check in the EXECUTING state.
+*   **Malformed Metrics:** If the monitor output is not JSON/parseable, the parser catches the exception, logs "Malformed metrics", skips the metric entry, and proceeds to **FINALIZING** without aborting the run.
+
+### Auditable Design
+
+**Component Boundaries:**
+*   **Shell Wrapper (`run_benchmark.sh`):** Handles process spawning, environment isolation (cleaning env vars), timeout enforcement, and file locking (using `flock` on the temp manifest file). It acts as the gatekeeper to prevent race conditions.
+*   **Python Parser (`parse_llama.py`):** Reads `response.txt` and `metrics.json`. It contains the logic for token counting (using regex or simple character counting if tokenization is unavailable) and schema validation. It is stateless regarding the run lifecycle but context-aware regarding the prompt.
+*   **Generator (`generate_manifest.py`):** Reads the raw logs and config to build the final `run_manifest.json`.
+
+**Metadata Schema (`run_manifest.json`):**
+```json
+{
+  "run_id": "unique-uuid-v4-string",
+  "timestamp": "ISO8601",
+  "identity_hash": "sha256(...)",
+  "status": "SUCCESS | FAILURE | MONITOR_MISSING",
+  "model_path": "path/to/model.gguf",
+  "backend": "CPU | CUDA | VULKAN",
+  "hardware_label": "detected-isa",
+  "context": 4096,
+  "n_predict": 256,
+  "temperature": 0.7,
+  "prompt_sha256": "abc123...",
+  "build_hash": "commit-id",
+  "driver_env": "cuda-driver-version",
+  "response_sha256": "response-file-hash",
+  "response_size_bytes": 1024,
+  "metrics_available": true,
+  "monitor_failure_reason": null | "command_not_found | permission_denied"
+}
+```
+
+**Atomic-Write Convention:**
+*   All output files (`response.txt`, `metrics.json`, `run_manifest.json`) must be written to a `.tmp` extension before a final `os.rename` operation.
+*   `response.txt` is opened in append mode (`"a"`) by the shell wrapper to ensure partial writes don't corrupt the file if the parent process dies mid-write (though the process should ideally close before exit).
+*   `metrics.json` uses `json.dump(..., fp=open('path.tmp', 'w'), indent=2)` then `rename`.
+
+**Preservation of Raw Output:**
+*   `stdout` and `stderr` are redirected to separate files: `run_<id>.stdout` and `run_<id>.stderr`.
+*   The prompt used is stored as a binary hash (`prompt_sha256`) in the manifest to ensure immutability, but the raw prompt string is also stored in `config.json` for human readability.
+
+### Analysis Integrity
+
+**Preventing Misleading Comparisons:**
+*   **Token Count Normalization:** Throughput must be calculated as `tokens / elapsed_time`. The number of generated tokens is derived from `n_predict` if the model completed the sequence, OR from a regex match of valid tokens in `response.txt` if the process exited early.
+*   **Exclusion Criteria:** A run where `metrics_available` is `false` and `response_size_bytes` < 500 (indicating premature exit) is excluded from throughput calculations.
+*   **Hash Enforcement:** Before comparing results, the script re-calculates the `identity_hash`. If the current run's parameters (e.g., `temperature` changed from 0.7 to 0.8) result in a different hash than the baseline, the comparison is skipped with a log entry "Parameters drifted, comparison invalid".
+
+**Handling Unknown Output Formats:**
+*   **Parser Strategy:** The `parse_llama.py` module attempts to detect the output format by inspecting the first line of `response.txt`.
+    *   If it matches a known JSON structure, it parses JSON.
+    *   If it matches a custom text delimiter (e.g., `|`), it splits lines.
+    *   If neither matches, it falls back to a "raw string mode" where it counts non-whitespace characters divided by `n_predict` as an estimated token count, logging a warning "Unknown output format detected, using heuristic".
+*   **Failure Treatment:** If the parser cannot determine the format and the output is too short to be meaningful, it marks the run as `partial_output` in the manifest, preventing it from being counted as a valid throughput sample.
+
+### Test Plan
+
+1.  **Simulated Backend Failure (OOM):**
+    *   *Setup:* Create a config pointing to a valid model but inject `OOM` into the `llama-cli` command line arguments (e.g., forcing `--ctx-size 1` with a large model).
+    *   *Expectation:* Process exits with non-zero code. `response.txt` is truncated. `metrics.json` is empty or partial. `run_manifest` status is `FAILURE`. `monitor_data_missing` is `false`.
+
+2.  **Missing Monitor:**
+    *   *Setup:* Run with `backend=CUDA` but unset `CUDA_VISIBLE_DEVICES` or remove the monitor script from the path.
+    *   *Expectation:* Model runs successfully, generates tokens. `metrics.json` creation fails. `run_manifest` status is `MONITOR_MISSING`. `monitor_failure_reason` is logged.
+
+3.  **Prompt Containing Spaces/Newlines:**
+    *   *Setup:* Define a workload prompt that includes `\n` and multiple spaces.
+    *   *Expectation:* The `prompt_sha256` changes compared to a single-line prompt. The runner correctly parses the multi-line input. `response.txt` preserves the exact formatting.
+
+4.  **Partial Output (Early Exit):**
+    *   *Setup:* Configure a very low `n_predict` (e.g., 5) with a high `temperature` (e.g., 1.0) to increase variance, or manually truncate the `response.txt` file before the runner finishes its post-processing.
+    *   *Expectation:* The parser detects `response_size_bytes` < threshold. Status is `FAILURE` (due to incomplete generation) rather than `SUCCESS`.
+
+5.  **Changed Prompt Hash:**
+    *   *Setup:* Execute a run with Workload `chat`, then immediately execute a second run with Workload `coding` (which has a different prompt).
+    *   *Expectation:* The `identity_hash` differs. The second run should not be compared to the first in a "same experiment" analysis. The system should flag "Experimental Identity Mismatch".
+
+6.  **Malformed Metrics Output:**
+    *   *Setup:* Inject garbage text into the expected location of `metrics.json` output (simulating a broken monitor process).
+    *   *Expectation:* The parser catches the `JSONDecodeError`, logs "Malformed metrics", skips the metric data, and proceeds to finalize the run without aborting the model execution. Status remains `SUCCESS`.
+
+### Pre-merge Review
+
+**Risk 1: Assumption of `llama.cpp` Exit Codes**
+*   **Flaw:** The design assumes specific exit codes (0 for success, non-zero for failure) without verifying the exact behavior of the `llama-cli` binary version being used. Different versions of `llama.cpp` may return different exit codes for OOM or timeout.
+*   **Fix:** Replace hardcoded exit code checks with a subprocess `poll()` loop that monitors for a specific signal (like SIGKILL) or a timeout exception raised by the shell wrapper, regardless of the child's exit code. The wrapper should interpret "process killed" as failure, not just "exit code != 0".
+
+**Risk 2: Tokenization vs. Character Count**
+*   **Flaw:** The analysis integrity section suggests counting characters as a proxy for tokens in unknown formats. This introduces massive error variance. 20 characters might be 1 token or 20 tokens depending on the language and model.
+*   **Fix:** Do not count characters. Instead, rely strictly on the `n_predict` parameter for the expected token count if the output is truncated. If `response.txt` exists but is shorter than `n_predict * avg_token_bytes`, flag it as a hard failure immediately, rather than trying to guess the token count.
+
+**Risk 3: Race Condition in Atomic Manifest Write**
+*   **Flaw:** Using `os.rename` on the same filesystem is generally atomic, but if the system runs out of inodes or the disk is unmounting during the rename, the file could be left in an inconsistent state, or the script could fail silently.
+*   **Fix:** Implement a "triple check" atomic write pattern: Write to `.tmp`, check file size > 0, then `rename`. Add a cleanup handler that forces `rm -f` on the `.tmp` file if the rename fails, ensuring no orphaned temporary files remain to confuse the audit log.
+
+[ Prompt: 12.9 t/s | Generation: 5.1 t/s ]
+
+
+Exiting...

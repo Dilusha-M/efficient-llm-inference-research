@@ -1,0 +1,659 @@
+Input prompt
+
+You are reviewing production-quality Python for an inference benchmark. Implement the function below in Python using only the standard library.
+
+Task:
+Implement `summarize_decode_speeds(lines)` where `lines` is an iterable of strings. Return a dictionary with exactly these keys:
+
+* `count`: number of valid decode records
+* `min_tps`: minimum valid tps, or `None` when there are no valid records
+* `max_tps`: maximum valid tps, or `None` when there are no valid records
+* `avg_tps`: arithmetic mean rounded to three decimal places, or `None` when there are no valid records
+
+A record is valid only when, after splitting on whitespace, it contains both `event=decode` and a `tps=<value>` field. `<value>` must be a finite, strictly positive decimal accepted by Python's `float`; surrounding whitespace is already removed by tokenization. Ignore malformed lines, non-decode events, duplicate keys with conflicting values, non-finite values (`nan`, `inf`, `-inf`), zero, and negative values. Treat a duplicate `tps` key with the same value as malformed too. Do not crash if `lines` contains a non-string item; ignore that item.
+
+Response requirements:
+1. Provide a complete runnable implementation, including imports and a small `if __name__ == "__main__":` demonstration.
+2. Use a one-pass algorithm with O(1) extra space (excluding the input iterable).
+3. Explain why naive substring matching can accept the wrong event or a malformed duplicate, and explain the empty-result policy.
+4. Include at least eight demonstration lines covering a valid record, another key=value field, a non-decode event, a malformed float, `nan`, a duplicate key, a non-string item, and a valid record whose tps requires rounding.
+5. State the expected summary for your demonstration and include two focused assertions that would catch common incorrect implementations.
+
+Final model response
+
+warning: no usable GPU found, --gpu-layers option will be ignored
+warning: one possible reason is that llama.cpp was compiled without GPU support
+warning: consult docs/build.md for compilation instructions
+
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b10110-8f5ab832c
+model      : /home/dilusha/llm-research/models/Qwen/Qwen3.5-4B-GGUF/Qwen3.5-4B-Q4_K_M.gguf
+ftype      : Q4_K - Medium
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> You are reviewing production-quality Python for an inference benchmark. Implement the function below in Python using only the standard library.
+
+Task:
+Implement `summarize_decode_speeds(lines)` where `lines` is an iterable of strings. Return a dictionary with exactly these keys:
+
+* `count`: number of valid decode records
+* `min_tps`: minimum valid tps, or `None` when there are no valid records
+* `max_tps`: maximum valid tps, or `None` when there are no valid records
+* `avg_tps`: arithmetic mean  ... (truncated)
+```python
+import sys
+import math
+from typing import Any, Iterable, Dict, Optional
+
+def summarize_decode_speeds(lines: Iterable[Any]) -> Dict[str, Optional[float]]:
+    """
+    Review production-quality Python for an inference benchmark.
+    
+    Implements `summarize_decode_speeds(lines)` where `lines` is an iterable of strings.
+    Returns a dictionary with exactly: count, min_tps, max_tps, avg_tps.
+    
+    Constraints:
+    - One-pass algorithm with O(1) extra space (excluding input iterable).
+    - Only standard library.
+    - Strict validation rules for 'event=decode' and 'tps=<value>'.
+    """
+    
+    count = 0
+    min_tps = None
+    max_tps = None
+    total_tps = 0.0
+    
+    for line in lines:
+        # Requirement: Do not crash if lines contains a non-string item.
+        if not isinstance(line, str):
+            continue
+        
+        tokens = line.split()
+        if not tokens:
+            continue
+        
+        # We need to find a token that matches the pattern 'tps=<value>'
+        # and verify the 'event=decode' token exists in the same line.
+        # To avoid substring matching errors (e.g., 'tps=decode' matching 'tps=1.5'),
+        # we must ensure the token before '=' is exactly 'tps'.
+        
+        decode_event_found = False
+        tps_value = None
+        tps_key_found = False
+        
+        for token in tokens:
+            if '=' not in token:
+                continue
+            
+            # Split on the first '=' only
+            parts = token.split('=', 1)
+            if len(parts) != 2:
+                continue
+            
+            key, value_str = parts
+            
+            # Check for 'event=decode'
+            if key == 'event':
+                if value_str == 'decode':
+                    decode_event_found = True
+                # If event=decode exists, we can stop checking for event but continue for tps
+                # However, we must ensure we don't process conflicting event values if they existed.
+                # But the spec says "duplicate keys with conflicting values" -> malformed.
+                # Since we process token by token, if we see event=foo later, it conflicts.
+                # We will track the event value found so far.
+                # To be safe with one pass and O(1) space, we can just find the first valid event=decode
+                # and the first valid tps=<value>. If we encounter another event or tps before finishing line,
+                # we should verify consistency.
+                # Actually, the simplest robust way in one pass:
+                # 1. Find if 'event=decode' exists.
+                # 2. Find if 'tps=<value>' exists.
+                # 3. If both exist, check for duplicates.
+                pass
+            
+            # Check for 'tps=<value>'
+            elif key == 'tps':
+                tps_key_found = True
+                # Validate the float
+                try:
+                    val = float(value_str)
+                    # Check finite, strictly positive
+                    if math.isfinite(val) and val > 0:
+                        tps_value = val
+                    else:
+                        # Invalid tps value: nan, inf, 0, negative
+                        continue # Ignore this specific token, but keep looking if duplicate logic needed?
+                        # Spec: "Treat a duplicate tps key with the same value as malformed too."
+                        # This implies if we see tps=1.0 then tps=1.0, it's malformed.
+                        # So we cannot store the first one blindly if we see a duplicate.
+                        # However, to do this strictly in one pass without storing history,
+                        # we have a problem unless we assume the line is processed correctly.
+                        # Re-reading spec: "Treat a duplicate tps key with the same value as malformed too."
+                        # This usually implies that if we see tps=1.0 twice, the line is bad.
+                        # But if we see tps=1.0 and tps=2.0? The spec doesn't explicitly say "different values" are malformed,
+                        # only "duplicate keys with the same value".
+                        # Usually in log parsing, duplicate keys are bad. But strictly speaking:
+                        # "duplicate tps key with the same value" -> malformed.
+                        # What about different values? 
+                        # Let's assume standard log parsing: duplicate key = error/malformed line.
+                        # If a line has tps=5 and tps=6, is it valid?
+                        # The spec says: "Ignore ... duplicate keys with conflicting values" in the intro,
+                        # then later "Treat a duplicate tps key with the same value as malformed too."
+                        # It seems to imply ANY duplicate key is bad.
+                        # Let's adopt the rule: If we see 'tps' twice in one line, the line is malformed.
+                        # Therefore, if tps_key_found is already True, and we see 'tps' again, we must discard the line.
+                        pass
+                except ValueError:
+                    # Not a float
+                    continue
+        
+        # Logic to handle duplicates strictly in one pass:
+        # If we encounter a second 'tps' key, we must invalidate the potential validity of the line.
+        # We can track if we've seen 'tps' before.
+        
+        # Let's re-scan logic slightly:
+        # We need to know if we saw 'event=decode'.
+        # We need to know if we saw 'tps' before.
+        # If we see 'tps' again, the line is malformed.
+        
+        # Revised one-pass loop:
+        pass 
+        
+    # Correct Implementation Logic:
+    # We iterate once. We maintain state for the current line.
+    # State: has_event_decode (bool), has_seen_tps (bool), tps_val (float or None), tps_seen_twice (bool)
+    
+    # Reset for the new function implementation
+    count = 0
+    min_tps = None
+    max_tps = None
+    total_tps = 0.0
+    
+    for line in lines:
+        if not isinstance(line, str):
+            continue
+        
+        # State for this line
+        has_event_decode = False
+        has_seen_tps = False
+        tps_val = None
+        tps_seen_twice = False
+        
+        tokens = line.split()
+        for token in tokens:
+            if '=' not in token:
+                continue
+            
+            key, value_str = token.split('=', 1)
+            
+            if key == 'event':
+                if value_str == 'decode':
+                    has_event_decode = True
+                else:
+                    # event=foo is not decode. 
+                    # If we already had event=decode, now we have conflict.
+                    # But simpler: just check if ANY token is event=decode.
+                    # Conflicting event values? e.g. event=decode then event=train.
+                    # Spec: "duplicate keys with conflicting values" -> malformed.
+                    # If we see event=decode twice, it's duplicate.
+                    # If we see event=decode then event=train, it's conflicting.
+                    # For simplicity in one pass: if we see event=decode, mark it.
+                    # If we see another event key, it conflicts with the 'decode' requirement?
+                    # The requirement is "contains both event=decode AND a tps=<value>".
+                    # It does not explicitly forbid other event keys, but "conflicting values" suggests strictness.
+                    # Let's assume: if we see event=decode, we are good for that key.
+                    # If we see event=X (X!=decode), it's a conflict if we already have decode.
+                    # But to keep it robust: we just need to find 'event=decode'.
+                    # If we find 'event=decode' and later 'event=train', is it malformed?
+                    # Usually yes. Let's track the last event value.
+                    # Actually, the spec says "contains both event=decode...".
+                    # It doesn't say "only contains".
+                    # However, "duplicate keys with conflicting values" is listed in "Ignore malformed lines".
+                    # So if keys are duplicated with different values, it's malformed.
+                    # If keys are duplicated with same value, it's malformed (explicitly stated).
+                    # So: If we see 'event' twice, it's malformed regardless of value?
+                    # Yes. "Duplicate keys with conflicting values" AND "duplicate ... same value".
+                    # Implies ANY duplicate key makes it malformed.
+                    pass
+            
+            if key == 'tps':
+                if has_seen_tps:
+                    # Duplicate key found -> malformed line
+                    tps_seen_twice = True
+                    break # Stop processing this line, it's malformed
+                else:
+                    has_seen_tps = True
+                    try:
+                        val = float(value_str)
+                        if math.isfinite(val) and val > 0:
+                            tps_val = val
+                    except ValueError:
+                        # Malformed tps value
+                        pass
+        
+        # Validation of the line
+        if tps_seen_twice:
+            # Malformed due to duplicate key
+            continue
+        
+        # Check for event=decode specifically
+        # We need to ensure 'event=decode' exists.
+        # We can do a second check on tokens or maintain a flag.
+        # Let's do a quick check on tokens again or maintain a flag.
+        # To save code complexity, let's re-scan or maintain flag.
+        # Maintaining flag is cleaner.
+        
+        # Re-scan logic for event flag inside the loop above:
+        # We didn't strictly track if event=decode was found vs just 'event' exists.
+        # Let's rewrite the loop cleanly.
+        pass
+
+    # Final Correct Algorithm:
+    # Iterate once.
+    # Variables: count, min, max, total.
+    # For each line:
+    #   reset local flags: event_is_decode = False, tps_seen = False, tps_val = None, line_valid = True
+    #   For each token:
+    #     if '=' not in token: continue
+    #     k, v = token.split('=', 1)
+    #     if k == 'event':
+    #       if v == 'decode':
+    #         event_is_decode = True
+    #       else:
+    #         # Conflicting event? If we already have decode, this conflicts.
+    #         # Also, duplicate key check applies here too.
+    #         # If we see 'event' twice, line_valid = False.
+    #         # But wait, does it say duplicate event keys are malformed?
+    #         # "duplicate keys with conflicting values" -> malformed.
+    #         # "duplicate keys with same value" -> malformed.
+    #         # So ANY duplicate key is malformed.
+    #         # So if we see 'event' again, line_valid = False.
+    #         line_valid = False
+    #     if k == 'tps':
+    #       if tps_seen:
+    #         line_valid = False # Duplicate key
+    #       else:
+    #         tps_seen = True
+    #         try:
+    #           val = float(v)
+    #           if math.isfinite(val) and val > 0:
+    #             tps_val = val
+    #         except ValueError:
+    #           pass
+    
+    # After token loop:
+    # If line_valid AND event_is_decode AND tps_val is not None:
+    #   count += 1
+    #   update min/max/total
+    
+    # Wait, the logic "If we see 'event' twice, line_valid = False" is correct based on "duplicate keys".
+    # But what if the first 'event' is 'train' and second is 'decode'?
+    # That is also a duplicate key with conflicting values. Malformed.
+    # So yes, any duplicate key invalidates the line.
+    
+    # One detail: "Treat a duplicate tps key with the same value as malformed too."
+    # This is covered by "any duplicate key".
+    
+    # Implementation details:
+    # We need to detect if 'event=decode' exists.
+    # We need to detect if 'tps' exists and is valid.
+    # We need to ensure no duplicate keys.
+    
+    # Let's refine the loop.
+    
+    count = 0
+    min_tps = None
+    max_tps = None
+    total_tps = 0.0
+    
+    for line in lines:
+        if not isinstance(line, str):
+            continue
+        
+        # Process line
+        # We need to check for duplicates.
+        # To do this efficiently in one pass:
+        # If we see a key we've seen before in this line, it's malformed.
+        # We can use a set for seen keys, but that is O(n) space.
+        # The requirement says O(1) extra space.
+        # This is tricky. How to detect duplicate keys with O(1) space in one pass?
+        # We can't store the set of keys seen.
+        # However, we can infer:
+        # If we see 'event' and then 'event' again -> duplicate.
+        # If we see 'tps' and then 'tps' again -> duplicate.
+        # But we might see 'event', then 'tps', then 'event'.
+        # With O(1) space, we can't remember we saw 'event' unless we process tokens sequentially and assume limited key types?
+        # No, the input line can be long.
+        # BUT, the requirement says "O(1) extra space (excluding the input iterable)".
+        # This usually implies we cannot store the whole line or a set of keys.
+        # Is it possible the problem assumes we process the line character by character?
+        # Or is it possible that "O(1) space" allows the state of the current line processing (a few booleans), but not the full history?
+        # If we cannot store a set, we cannot detect duplicates like 'event', 'tps', 'event'.
+        # Unless... we assume the format is simple or we process multiple lines? No, it's one line validity.
+        # Wait, "Treat a duplicate tps key with the same value as malformed too."
+        # Maybe the constraint "O(1) extra space" is a strong hint that we might not need to detect arbitrary duplicates,
+        # OR we are expected to detect them using the fact that we can't store history.
+        # Actually, if we can't store history, we can't detect duplicates.
+        # Perhaps the interpretation is: We only need to detect duplicates for 'tps' if the values are the same?
+        # "Treat a duplicate tps key with the same value as malformed too."
+        # This suggests we DON'T need to flag it if values are different?
+        # But the previous sentence says "Ignore ... duplicate keys with conflicting values".
+        # This implies conflicting values also make it malformed.
+        # So ANY duplicate makes it malformed.
+        # If ANY duplicate makes it malformed, and we cannot store history, how do we solve it with O(1) space?
+        # Maybe the "O(1) space" applies to the whole function excluding the input, meaning we can store a set?
+        # "O(1) extra space (excluding the input iterable)" usually means memory usage is constant regardless of line length.
+        # A set of keys seen in a line grows with line length.
+        # Thus, we CANNOT detect arbitrary duplicates with O(1) space unless we make an assumption.
+        # Assumption: The line format is such that keys are unique or the test cases don't cover complex duplicates?
+        # Or maybe we interpret "duplicate keys with conflicting values" as "If you see the same key twice with different values, ignore it"?
+        # No, "Ignore malformed lines".
+        # Let's re-read carefully: "Treat a duplicate tps key with the same value as malformed too."
+        # This phrasing "too" implies that duplicates with DIFFERENT values were ALREADY considered malformed by "duplicate keys with conflicting values".
+        # So ANY duplicate is bad.
+        # How to do this with O(1) space?
+        # Maybe we process the line twice? No, "one-pass algorithm".
+        # Maybe we assume the line is short enough that the set fits in O(1)? No, O(1) means constant, not bounded by line length.
+        # Perhaps the trick is: We don't need to track all keys. We only care about 'event' and 'tps'.
+        # But duplicates can be between 'event' and 'event', or 'tps' and 'tps'.
+        # If we only care about 'tps' duplicates, we can track it.
+        # What about 'event' duplicates?
+        # If we see 'event' twice, is it malformed?
+        # Yes.
+        # But maybe we can assume 'event' only appears once?
+        # Let's look at the constraints again.
+        # "Use a one-pass algorithm with O(1) extra space".
+        # This is a standard competitive programming constraint. It usually implies we cannot store the input.
+        # If we cannot store the input, and we cannot store a set, we cannot detect duplicates.
+        # UNLESS: We are allowed to store a constant number of booleans.
+        # So, we must assume that duplicate detection is either not required for 'event' (maybe it's guaranteed unique) OR the definition of duplicate is loose.
+        # However, the spec is specific about 'tps'.
+        # Let's assume the primary concern is 'tps' duplicates.
+        # For 'event', maybe we just check if 'event=decode' exists.
+        # If we see 'event' twice, we can flag it, but we need to remember we saw it.
+        # To satisfy O(1) space, we can assume that if we see 'event' again, we check the value.
+        # But we can't remember if we saw it before.
+        # Okay, let's step back.
+        # Is it possible to detect duplicates without a set? No, unless we process the string in a way that we can't look back.
+        # Wait, what if we use the fact that we are iterating tokens?
+        # If we see 'tps' again, we know we saw it before.
+        # But we need to store "have we seen tps?". That is O(1) space!
+        # We just need ONE boolean: `seen_tps`.
+        # What about `seen_event`? We also need one boolean: `seen_event`.
+        # So if we see 'tps' again, set `seen_tps = True`. If we see 'tps' twice, we can check `seen_tps`.
+        # But how do we detect 'event' 'event'?
+        # We need `seen_event`.
+        # So we need 2 booleans.
+        # Is that O(1)? Yes.
+        # But what if the duplicate is between 'event' and 'tps'?
+        # "Duplicate keys" implies the same key name.
+        # So 'event' duplicate means 'event' ... 'event'.
+        # 'tps' duplicate means 'tps' ... 'tps'.
+        # We don't need to track 'event' vs 'tps' relationship.
+        # So we only need to track if we've seen 'event' and if we've seen 'tps'.
+        # So:
+        # seen_event = False
+        # seen_tps = False
+        # If token is 'event':
+        #   if seen_event: duplicate -> malformed
+        #   seen_event = True
+        # If token is 'tps':
+        #   if seen_tps: duplicate -> malformed
+        #   seen_tps = True
+        # This works with O(1) space!
+        
+        seen_event = False
+        seen_tps = False
+        tps_val = None
+        event_is_decode = False
+        
+        # We need to process the whole line to find 'event=decode'.
+        # But if we find a duplicate, the line is malformed immediately?
+        # Yes.
+        
+        # However, we need to be careful:
+        # If we see 'event=train', is it a duplicate of 'event'? No, it's the first time we see 'event'.
+        # If we see 'event=decode' later, is it a duplicate? Yes.
+        # So we track `seen_event`.
+        
+        # Also, we need to ensure we found 'event=decode'.
+        # If we see 'event=train' then 'event=decode', it's malformed.
+        # If we see 'event=decode' then 'event=train', it's malformed.
+        # If we see 'event=decode' then 'event=decode', it's malformed.
+        
+        # So logic:
+        # For each token:
+        #   If key == 'event':
+        #     if seen_event:
+        #       line_valid = False
+        #     else:
+        #       seen_event = True
+        #       if value_str == 'decode':
+        #         event_is_decode = True
+        #       else:
+        #         # event=train. If we later see event=decode, it will trigger seen_event again.
+        #         # But if we never see event=decode, event_is_decode remains False.
+        #         # That's fine.
+        #   If key == 'tps':
+        #     if seen_tps:
+        #       line_valid = False
+        #     else:
+        #       seen_tps = True
+        #       try:
+        #         val = float(value_str)
+        #         if math.isfinite(val) and val > 0:
+        #           tps_val = val
+        #       except ValueError:
+        #         pass
+        
+        # After loop:
+        # If line_valid and seen_event and event_is_decode and tps_val is not None:
+        #   count += 1
+        #   ...
+        
+        # One edge case: "duplicate keys with conflicting values"
+        # If we see 'event=decode' then 'event=train'.
+        # First 'event': seen_event=False -> set True.
+        # Second 'event': seen_event=True -> line_valid=False.
+        # Correct.
+        
+        # Edge case: 'tps' duplicate.
+        # 'tps=1.0' then 'tps=2.0'.
+        # First: seen_tps=False -> set True, val=1.0.
+        # Second: seen_tps=True -> line_valid=False.
+        # Correct.
+        
+        # Edge case: non-finite or zero or negative.
+        # Handled in try/except and checks.
+        
+        # Edge case: "nan", "inf".
+        # float('nan') -> isfinite is False.
+        # float('inf') -> isfinite is False.
+        # Handled.
+        
+        # Edge case: non-string item in lines.
+        # Handled at start of loop.
+        
+        # Edge case: rounding.
+        # avg_tps rounded to 3 decimal places.
+        
+        # Let's write the code.
+        pass
+    """
+    
+    # Reset variables for the actual implementation block
+    count = 0
+    min_tps = None
+    max_tps = None
+    total_tps = 0.0
+    
+    for line in lines:
+        if not isinstance(line, str):
+            continue
+        
+        seen_event = False
+        seen_tps = False
+        event_is_decode = False
+        line_valid = True
+        tps_val = None
+        
+        # We can break early if line_valid becomes False?
+        # Yes, if we detect a duplicate, the line is malformed.
+        # But we must ensure we don't miss the 'event=decode' check if we break early?
+        # No, if line is malformed, we ignore it completely.
+        # So we can break immediately.
+        
+        tokens = line.split()
+        for token in tokens:
+            if '=' not in token:
+                continue
+            
+            key, value_str = token.split('=', 1)
+            
+            if key == 'event':
+                if seen_event:
+                    line_valid = False
+                    break
+                seen_event = True
+                if value_str == 'decode':
+                    event_is_decode = True
+            
+            elif key == 'tps':
+                if seen_tps:
+                    line_valid = False
+                    break
+                seen_tps = True
+                try:
+                    val = float(value_str)
+                    if math.isfinite(val) and val > 0:
+                        tps_val = val
+                except ValueError:
+                    pass
+        
+        if line_valid and seen_event and event_is_decode and tps_val is not None:
+            count += 1
+            if min_tps is None or tps_val < min_tps:
+                min_tps = tps_val
+            if max_tps is None or tps_val > max_tps:
+                max_tps = tps_val
+            total_tps += tps_val
+    
+    avg_tps = None
+    if count > 0:
+        avg_tps = round(total_tps / count, 3)
+    
+    return {
+        'count': count,
+        'min_tps': min_tps,
+        'max_tps': max_tps,
+        'avg_tps': avg_tps
+    }
+
+# Demonstration
+if __name__ == "__main__":
+    # Requirement: At least eight demonstration lines
+    # 1. Valid record
+    # 2. Another key=value field (e.g. latency=10ms)
+    # 3. Non-decode event
+    # 4. Malformed float (e.g. tps=1.2.3)
+    # 5. nan
+    # 6. Duplicate key
+    # 7. Non-string item
+    # 8. Valid record whose tps requires rounding (e.g. avg needs rounding)
+    
+    demo_lines = [
+        "event=decode tps=100.5",           # 1. Valid record
+        "event=decode latency=10ms tps=200", # 2. Another key=value field
+        "event=train tps=50",               # 3. Non-decode event (invalid line)
+        "event=decode tps=1.2.3",           # 4. Malformed float
+        "event=decode tps=nan",             # 5. nan
+        "event=decode tps=100 tps=50",      # 6. Duplicate key (invalid line)
+        123,                                # 7. Non-string item
+        "event=decode tps=0.33333",         # 8. Valid record requiring rounding
+    ]
+    
+    result = summarize_decode_speeds(demo_lines)
+    
+    print("Summary:", result)
+    
+    # Expected Summary:
+    # Line 1: Valid (100.5)
+    # Line 2: Valid (200)
+    # Line 3: Invalid (event=train)
+    # Line 4: Invalid (malformed float)
+    # Line 5: Invalid (nan)
+    # Line 6: Invalid (duplicate key)
+    # Line 7: Ignored (non-string)
+    # Line 8: Valid (0.33333 -> rounds to 0.333)
+    # Count = 3
+    # Min = 0.333
+    # Max = 200
+    # Avg = (100.5 + 200 + 0.33333) / 3 = 300.83333 / 3 = 100.27777... -> 100.278
+    
+    # Assertions
+    assert result['count'] == 3, "Expected count 3"
+    assert result['avg_tps'] == 100.278, "Expected avg 100.278"
+    
+    print("Assertions passed!")
+```
+
+### Explanation of Naive Substring Matching and Empty-Result Policy
+
+**Why naive substring matching fails:**
+Naive substring matching (e.g., `if 'tps=' in line`) is prone to false positives and logic errors:
+1.  **Wrong Event Match:** A line like `event=decode tps=decode` would match `tps=...` if we simply check for the substring `tps=`. However, `decode` is not a valid float, so it gets filtered. But consider `event=decode tps=1.5`. A naive check for `event=decode` works. The danger arises with `tps` itself. If we have `tps=decode`, `float('decode')` fails, which is correct. But if we have `tps=1.5` and `event=decode`, that's fine. The real danger is `tps=decode` looking like a valid float if we didn't parse it.
+2.  **Malformed Duplicates:** Substring matching (`line.count('tps=') > 1`) doesn't distinguish between `tps=1.0` and `tps=2.0`. It counts occurrences. While it might catch duplicates, it doesn't validate the *value*. If we have `tps=1.0` and `tps=1.0`, substring count is 2 -> malformed. But if we have `tps=1.0` and `tps=2.0`, substring count is 2 -> malformed (which is correct per spec). However, substring matching cannot easily extract the value to check for `nan`, `inf`, or `0` without splitting anyway.
+3.  **Event/Timestamp Confusion:** A line like `event=decode@123` (if timestamp was attached) might confuse a simple `event=decode` check if not careful.
+4.  **Efficiency:** Substring scanning is O(N) per line, but splitting is also O(N). The main issue is correctness, not just speed.
+
+**The Empty-Result Policy:**
+The function must return `None` for `min_tps`, `max_tps`, and `avg_tps` if there are **zero** valid records. This is crucial because:
+1.  It prevents division by zero errors in the `avg` calculation.
+2.  It signals that the dataset contained no valid data points, which is a distinct state from "data exists but values are missing".
+3.  It avoids returning `0.0` (which could be a valid TPS if `count > 0`), ensuring the user knows if the dataset was empty or if the threshold was met.
+
+### Expected Summary for Demonstration
+
+*   **Line 1** (`event=decode tps=100.5`): Valid. Count=1, Min=100.5, Max=100.5, Total=100.5.
+*   **Line 2** (`event=decode latency=10ms tps=200`): Valid. Count=2, Min=100.5, Max=200, Total=300.5.
+*   **Line 3** (`event=train tps=50`): Invalid (event not decode).
+*   **Line 4** (`event=decode tps=1.2.3`): Invalid (malformed float).
+*   **Line 5** (`event=decode tps=nan`): Invalid (non-finite).
+*   **Line 6** (`event=decode tps=100 tps=50`): Invalid (duplicate key).
+*   **Line 7** (`123`): Ignored (non-string).
+*   **Line 8** (`event=decode tps=0.33333`): Valid. Count=3, Min=0.333, Max=200, Total=300.83333.
+
+**Final Result:**
+*   `count`: 3
+*   `min_tps`: 0.333
+*   `max_tps`: 200
+*   `avg_tps`: 100.278 (Calculated as `(100.5 + 200 + 0.33333) / 3 ≈ 100.27777...` rounded to 3 decimals)
+
+### Focused Assertions
+
+1.  **Count Verification**: Ensures that non-decode events, malformed floats, and duplicates are correctly rejected.
+    ```python
+    assert result['count'] == 3, "Must correctly filter out non-decode, malformed, and duplicate lines."
+    ```
+2.  **Rounding Verification**: Ensures that floating-point arithmetic and rounding logic are precise.
+    ```python
+    assert result['avg_tps'] == 100.278, "Arithmetic mean must be rounded to exactly three decimal places."
+    ```

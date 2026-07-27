@@ -1,0 +1,177 @@
+warning: no usable GPU found, --gpu-layers option will be ignored
+warning: one possible reason is that llama.cpp was compiled without GPU support
+warning: consult docs/build.md for compilation instructions
+
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b10110-8f5ab832c
+model      : /home/dilusha/llm-research/models/Qwen/Qwen3.5-4B-GGUF/Qwen3.5-4B-Q4_K_M.gguf
+ftype      : Q4_K - Medium
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> Answer the following independent benchmark-review tasks. Keep answers clearly separated. Be explicit about assumptions, distinguish measured facts from hypotheses, and call out any case where the requested conclusion cannot be determined from the supplied data.
+
+Task 1 — quantization tradeoff:
+An 8B model has a 8.0 GB Q8_0 file and a 4.8 GB Q4_K_M file. A 6 GB GPU has 5.2 GB free before inference. Explain which memory pressure each format creates, why file size is not a complete runtime-memory ... (truncated)
+### Task 1 — quantization tradeoff
+
+**Memory Pressure Analysis**
+*   **Q8_0 (8.0 GB file):** This format creates significant memory pressure. With only 5.2 GB of free space on a 6 GB GPU, loading this file requires offloading the remaining ~2.8 GB to system RAM (assuming the OS and other processes do not consume additional memory). This risks swapping if the system is under other load, leading to severe latency spikes.
+*   **Q4_K_M (4.8 GB file):** This format creates moderate memory pressure. Loading this leaves 0.4 GB of free space on the GPU. While this allows the entire model to potentially fit on the GPU, it leaves almost no margin for the Key-Value (KV) cache or overhead, which is a tight but possibly viable configuration depending on the model's specific layer structure.
+
+**Why File Size is Not a Complete Runtime-Memory Estimate**
+File size represents the static weights only. It does not account for:
+1.  **KV Cache Overhead:** Context length scales linearly with memory usage; a 5.2 GB free limit with a large file leaves no room for any context.
+2.  **Activation Memory:** Forward passes generate temporary tensors that consume memory proportional to the number of layers and sequence length.
+3.  **Overhead:** The `llama.cpp` library and OS require additional memory for thread stacks, buffers, and the allocator.
+4.  **Fragmentation:** Real-world usage rarely has perfectly contiguous free blocks, which can cause false negatives in simple size comparisons.
+
+**Required Quality/Performance Measurements**
+Before declaring one format better, the following must be measured under identical context lengths:
+1.  **Memory Pressure Curve:** Plot memory usage vs. context size to determine the maximum context length (`max_ctx`) each format supports before triggering an OOM error.
+2.  **Throughput vs. Context Size:** Measure tokens per second (tok/s) as context size increases. A format that fits entirely on GPU (Q4_K_M) often outperforms one that requires heavy RAM offloading (Q8_0) once the context exceeds a small threshold, despite the latter having higher precision.
+
+**Assumption:** The comparison assumes the "8.0 GB" figure includes all weights and no metadata overhead, and the "5.2 GB free" figure is the total contiguous free memory available for allocation.
+
+---
+
+### Task 2 — conservative launch decision
+
+**Conservative Procedure**
+1.  **Initial Allocation Check:** Verify that `Model_Weights` (5.0 GB) + `Estimated_KV_Cache` < `GPU_Memory` (6 GB). Since the prompt is 2,000 tokens, a conservative estimate for KV cache is roughly 0.5 GB to 1.0 GB per 1M tokens depending on layers. Let's assume a safe estimate of 0.8 GB. Total ≈ 5.8 GB. This fits on GPU.
+2.  **Default Configuration:** Start with `n_ctx` set to the maximum supported by the model (or a safe default like 4k or 8k if the model supports it) and `n_threads` set to the number of physical CPU cores.
+3.  **Execution & Monitoring:** Run the inference. If it crashes or shows OOM, reduce `n_ctx` or increase `n_batch` (if applicable) to reduce activation memory.
+4.  **Fallback Strategy:** If the model does not fit on GPU, configure `llama.cpp` to use `--cuda-ff` (if supported) or enable layer-wise offloading (`--offload`) moving layers to CPU RAM.
+
+**Telemetry to Record**
+*   **Memory Footprint:** Peak GPU memory usage and peak System RAM usage.
+*   **Context Size:** The exact `n_ctx` value used.
+*   **Latency:** Time-to-first-token (TTFT) and average generation latency.
+*   **Error Codes:** Any specific CUDA errors or OOM warnings logged.
+
+**Unsafe or Misleading Success**
+*   **Unsafe:** Launching with `n_ctx` larger than the GPU's capacity + KV cache requirement, causing an OOM crash mid-generation.
+*   **Misleading Success:** Reporting "Success" while the model was running on CPU (slow) when it could have run on GPU (fast), or reporting a high TTFT when the system was actually swapping memory due to slight over-allocation.
+
+**Assumption:** The 5.0 GB figure refers strictly to the model weights. The 2,000 token prompt size is static, but the generation limit (512 tokens) is dynamic.
+
+---
+
+### Task 3 — robust aggregation
+
+**Validation Logic**
+To handle the outlier (8.0 tok/s) and the OOM warning correctly:
+1.  **Filter:** Exclude any run where `status == "oom"` or `error_code > 0`.
+2.  **Median:** Calculate the median of the remaining valid `tok/s` values.
+3.  **Reporting:** If fewer than 2 valid runs exist, report "Insufficient valid data" rather than a calculated median, as a single point cannot represent a robust distribution.
+
+**Pseudocode**
+```python
+def validate_and_aggregate(run_data_list):
+    # run_data_list: list of dicts with keys: 'speed', 'status', 'error_msg'
+    valid_runs = []
+    
+    for run in run_data_list:
+        # Hypothesis: OOM warnings indicate failure, not performance data
+        if run['status'] == 'oom' or 'out-of-memory' in run.get('error_msg', '').lower():
+            # Keep visible but exclude from calculation
+            valid_runs.append(run) 
+            continue
+        
+        # Only include successful runs with numeric speed
+        if run['speed'] is not None and run['speed'] > 0:
+            valid_runs.append(run)
+            
+    # Sort by speed for median calculation
+    valid_runs.sort(key=lambda x: x['speed'])
+    
+    if len(valid_runs) == 0:
+        return "All runs failed (OOM or invalid).", []
+    
+    if len(valid_runs) == 1:
+        return f"Only 1 valid run ({valid_runs[0]['speed']} tok/s). Single-point median.", [valid_runs[0]]
+    
+    # Calculate Median
+    n = len(valid_runs)
+    mid = n // 2
+    if n % 2 == 1:
+        median_val = valid_runs[mid]['speed']
+    else:
+        median_val = (valid_runs[mid - 1]['speed'] + valid_runs[mid]['speed']) / 2.0
+        
+    return f"Median valid speed: {median_val:.2f} tok/s", [r for r in valid_runs if r['speed'] is not None]
+```
+
+**Reporting Rule**
+If `len(valid_runs)` < 2, the result must be explicitly stated as "Insufficient valid data for statistical aggregation." The failed run(s) should be listed separately in the report to ensure reproducibility and debugging capability, rather than being treated as zero or ignored.
+
+**Assumption:** The "8.0 tok/s" run with an OOM warning is a corrupted metric (e.g., measuring empty output speed or a previous state) and should be excluded from the median calculation.
+
+---
+
+### Task 4 — validity audit
+
+**Four Threats to Validity**
+
+1.  **Threat: Workload/Output Comparability (Semantic Drift)**
+    *   *Description:* Different backends (CPU/CUDA/Vulkan) may use different sampling algorithms (e.g., greedy vs. top-p) or temperature settings by default, leading to different generated outputs even if the prompt is identical.
+    *   *Control/Disclosure:* Explicitly log the sampling parameters (temperature, top_p, top_k) in the experiment configuration and enforce identical seeds if possible. Use a fixed reference output for evaluation metrics rather than comparing raw generation strings.
+
+2.  **Threat: Hardware Resource Contention (Thermal/Power Throttling)**
+    *   *Description:* Running all three backends simultaneously or in rapid succession can cause the CPU or GPU to throttle due to heat, leading to artificially lower performance scores for the later runs.
+    *   *Control/Disclosure:* Enforce a mandatory cooldown period (e.g., 10 minutes) between runs of different backends. Monitor CPU/GPU temperatures via system telemetry and exclude runs where temperature exceeded a threshold (e.g., 85°C).
+
+3.  **Threat: Context Window Mismatch**
+    *   *Description:* CPU inference might default to a smaller context window due to memory constraints compared to GPU/Vulkan, altering the model's attention patterns and resulting in different token counts or quality.
+    *   *Control/Disclosure:* Hard-code the `n_ctx` parameter to the maximum supported by the hardware in the experiment script. Verify `n_ctx` in the logs for each backend before starting.
+
+4.  **Threat: Implementation Variance (Compiler Optimizations)**
+    *   *Description:* The C++ standard library optimizations or CUDA kernel compilation flags (PTX vs. SASS) may differ between builds, causing performance variances unrelated to the backend architecture itself.
+    *   *Control/Disclosure:* Use pinned binaries with identical compiler flags and optimization levels for all backends. Document the specific commit hashes or build IDs used for each backend to allow replication.
+
+**Assumption:** The comparison involves the same model architecture and weights across all three backends.
+
+---
+
+### Task 5 — user-visible latency
+
+**Definitions**
+*   **Time to First Token (TTFT):** The wall-clock time from the start of the prompt up to the appearance of the first generated character. This is dominated by prompt evaluation (processing the input).
+*   **Prompt-Evaluation Throughput:** The rate at which the model processes the input tokens (input tokens per second). High throughput here means a short TTFT.
+*   **Decode Throughput:** The rate at which generated tokens are produced (output tokens per second). This is the dominant factor for the duration of the generation phase.
+*   **Total Wall-Clock Time:** The sum of TTFT + Generation Duration. `Total Time = TTFT + (Generated_Tokens / Decode_Throughput)`.
+
+**Symbolic Equation**
+$$ T_{total} = T_{TTFT} + \frac{N_{gen}}{R_{decode}} $$
+Where $T_{TTFT}$ is primarily a function of $N_{prompt} \times R_{eval}$.
+
+**Example of Minimal Impact Optimization**
+*   *Scenario:* A user submits a 2,000-token prompt and expects 200 tokens of generation.
+*   *Optimization:* Reducing the prompt processing time from 500ms to 490ms by optimizing the tokenizer or kernel fusion.
+*   *Impact:* The new TTFT is 10ms faster. However, if the user waits only 10 seconds for the answer to finish, the 10ms difference is imperceptible. The user's experience is defined by the total time (~10.8s vs 10.9s) and the interactivity during the generation phase (TTFT + first few tokens), not the micro-seconds saved on the full prompt scan.
+*   *Conclusion:* Optimizing prompt processing (input throughput) yields negligible user-visible benefit if the prompt is long relative to the generation time or if the user's patience threshold is low. The critical metric is the *first interaction* latency, which depends heavily on decode throughput once the first token appears.
+
+**Assumption:** The 2,000 tokens are processed sequentially (no parallel batching for input) in the baseline scenario.
+
+[ Prompt: 12.8 t/s | Generation: 5.1 t/s ]
+
+
+Exiting...
