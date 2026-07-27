@@ -6,6 +6,7 @@ set -u
 # Each run writes raw output, metadata, system information, and monitor samples.
 
 BASE="${LLM_RESEARCH_BASE:-$HOME/llm-research}"
+DEFAULT_CONF="$BASE/experiments/configs/default.conf"
 MODELS_CONF="$BASE/experiments/configs/models.conf"
 PROMPT_DIR="$BASE/experiments/prompts"
 RESULTS_RAW="$BASE/results/raw"
@@ -13,8 +14,25 @@ DEFAULT_CONTEXT=4096
 DEFAULT_TOKENS=256
 DEFAULT_TEMP=0.7
 DEFAULT_RUNS=3
-DEFAULT_GPU_LAYERS=999
+DEFAULT_CPU_GPU_LAYERS=0
+DEFAULT_CUDA_GPU_LAYERS=999
+DEFAULT_VULKAN_GPU_LAYERS=999
+DEFAULT_THREADS=1
 DEFAULT_INTERVAL=1
+
+if [ -f "$DEFAULT_CONF" ]; then
+    # shellcheck disable=SC1090
+    source "$DEFAULT_CONF"
+fi
+
+DEFAULT_CONTEXT="${context_size:-$DEFAULT_CONTEXT}"
+DEFAULT_TOKENS="${generation_tokens:-$DEFAULT_TOKENS}"
+DEFAULT_TEMP="${temperature:-$DEFAULT_TEMP}"
+DEFAULT_RUNS="${runs:-$DEFAULT_RUNS}"
+DEFAULT_CPU_GPU_LAYERS="${cpu_gpu_layers:-$DEFAULT_CPU_GPU_LAYERS}"
+DEFAULT_CUDA_GPU_LAYERS="${cuda_gpu_layers:-$DEFAULT_CUDA_GPU_LAYERS}"
+DEFAULT_VULKAN_GPU_LAYERS="${vulkan_gpu_layers:-$DEFAULT_VULKAN_GPU_LAYERS}"
+DEFAULT_THREADS="${threads:-$DEFAULT_THREADS}"
 
 BACKEND=""
 HARDWARE=""
@@ -24,8 +42,10 @@ RUNS="$DEFAULT_RUNS"
 CONTEXT="$DEFAULT_CONTEXT"
 TOKENS="$DEFAULT_TOKENS"
 TEMP="$DEFAULT_TEMP"
-GPU_LAYERS="$DEFAULT_GPU_LAYERS"
+GPU_LAYERS=""
+THREADS="$DEFAULT_THREADS"
 INTERVAL="$DEFAULT_INTERVAL"
+DRY_RUN=0
 
 usage() {
     cat <<'USAGE'
@@ -37,8 +57,11 @@ Options:
   --context N          llama.cpp context size. Default: 4096
   --tokens N           Maximum generated tokens. Default: 256
   --temp FLOAT         Sampling temperature. Default: 0.7
-  --gpu-layers N       llama.cpp GPU layer offload count. Default: 999
+  --threads N          llama.cpp worker threads. Default: configured threads
+  --gpu-layers N       Override backend GPU layer offload count.
+                       Defaults: cpu=0, cuda=999, vulkan=999
   --interval SECONDS   Resource monitor sampling interval. Default: 1
+  --dry-run            Print the final llama.cpp command and exit without running.
   -h, --help           Show this help.
 
 Example:
@@ -93,6 +116,10 @@ while [ "$#" -gt 0 ]; do
             TEMP="${2:-}"
             shift 2
             ;;
+        --threads)
+            THREADS="${2:-}"
+            shift 2
+            ;;
         --gpu-layers)
             GPU_LAYERS="${2:-}"
             shift 2
@@ -100,6 +127,10 @@ while [ "$#" -gt 0 ]; do
         --interval)
             INTERVAL="${2:-}"
             shift 2
+            ;;
+        --dry-run)
+            DRY_RUN=1
+            shift
             ;;
         -h|--help)
             usage
@@ -121,19 +152,26 @@ case "$BACKEND" in
     cpu)
         LLAMA="$BASE/llama.cpp-builds/build-cpu/bin/llama-cli"
         CATEGORY="cpu"
+        BACKEND_GPU_LAYERS="$DEFAULT_CPU_GPU_LAYERS"
         ;;
     cuda)
         LLAMA="$BASE/llama.cpp-builds/build-cuda/bin/llama-cli"
         CATEGORY="gpu"
+        BACKEND_GPU_LAYERS="$DEFAULT_CUDA_GPU_LAYERS"
         ;;
     vulkan)
         LLAMA="$BASE/llama.cpp-builds/build-vulkan/bin/llama-cli"
         CATEGORY="gpu"
+        BACKEND_GPU_LAYERS="$DEFAULT_VULKAN_GPU_LAYERS"
         ;;
     *)
         die "Unsupported backend: $BACKEND"
         ;;
 esac
+
+if [ -z "$GPU_LAYERS" ]; then
+    GPU_LAYERS="$BACKEND_GPU_LAYERS"
+fi
 
 case "$WORKLOAD" in
     chat|coding|summarization|batch|agentic)
@@ -146,6 +184,7 @@ esac
 
 [ -x "$LLAMA" ] || die "llama-cli not found or not executable: $LLAMA"
 [ -f "$PROMPT_FILE" ] || die "Missing prompt file: $PROMPT_FILE"
+[ -n "$THREADS" ] || die "threads must not be empty"
 
 # shellcheck disable=SC1090
 source "$MODELS_CONF"
@@ -160,7 +199,19 @@ QUANTIZATION=$(echo "$MODEL_FILE" | sed -n 's/.*-\(UD-Q[0-9A-Za-z_]*\|Q[0-9A-Za-
 PARAMETER_SIZE=$(echo "$MODEL_DIR" | sed -n 's/.*-\([0-9][0-9.]*B\|[0-9][0-9.]*-[0-9][0-9.]*B\).*/\1/p')
 
 OUT_BASE="$RESULTS_RAW/$CATEGORY/$HARDWARE/$MODEL_LABEL/$WORKLOAD"
-mkdir -p "$OUT_BASE"
+
+LLAMA_CMD=(
+    "$LLAMA"
+    -m "$MODEL_PATH"
+    -c "$CONTEXT"
+    -n "$TOKENS"
+    -ngl "$GPU_LAYERS"
+    --threads "$THREADS"
+    --temp "$TEMP"
+    --perf
+    -no-cnv
+    -f "$PROMPT_FILE"
+)
 
 echo "Benchmark configuration"
 echo "  backend:   $BACKEND"
@@ -168,7 +219,23 @@ echo "  hardware:  $HARDWARE"
 echo "  model:     $MODEL_ALIAS ($MODEL_FILE)"
 echo "  workload:  $WORKLOAD"
 echo "  runs:      $RUNS"
+echo "  threads:   $THREADS"
+echo "  gpu layers:$GPU_LAYERS"
 echo "  output:    $OUT_BASE"
+
+if [ "$DRY_RUN" -eq 1 ]; then
+    printf 'llama command:'
+    printf ' %q' "${LLAMA_CMD[@]}"
+    printf '\n'
+    exit 0
+fi
+
+mkdir -p "$OUT_BASE"
+QUALITY_DIR="$BASE/results/quality/$HARDWARE/$MODEL_LABEL/$WORKLOAD"
+mkdir -p "$QUALITY_DIR"
+if [ ! -f "$QUALITY_DIR/evaluation.md" ]; then
+    printf '# Manual Quality Evaluation\n' > "$QUALITY_DIR/evaluation.md"
+fi
 
 RUN_INDEX=1
 while [ "$RUN_INDEX" -le "$RUNS" ]; do
@@ -191,17 +258,11 @@ while [ "$RUN_INDEX" -le "$RUNS" ]; do
     EXPERIMENT_ID="${CATEGORY}_${HARDWARE}_${MODEL_LABEL}_${WORKLOAD}_run${RUN_NO}_$(date -u +%Y%m%dT%H%M%SZ)"
     START_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     START_NS=$(date +%s%N)
+    GIT_COMMIT=$(git -C "$BASE" rev-parse HEAD 2>/dev/null || true)
 
     echo "Starting run $RUN_NO..."
 
-    "$LLAMA" \
-        -m "$MODEL_PATH" \
-        -c "$CONTEXT" \
-        -n "$TOKENS" \
-        -ngl "$GPU_LAYERS" \
-        --temp "$TEMP" \
-        --perf \
-        -f "$PROMPT_FILE" > "$RESULT" 2>&1 &
+    "${LLAMA_CMD[@]}" > "$RESULT" 2>&1 &
 
     LLAMA_PID=$!
 
@@ -221,6 +282,7 @@ while [ "$RUN_INDEX" -le "$RUNS" ]; do
 
     END_NS=$(date +%s%N)
     TOTAL_TIME=$(awk -v start="$START_NS" -v end="$END_NS" 'BEGIN { printf "%.3f", (end-start)/1000000000 }')
+    MODEL_LOAD_TIME=$(python3 -c 'import re,sys; from pathlib import Path; text=Path(sys.argv[1]).read_text(errors="replace") if Path(sys.argv[1]).exists() else ""; m=re.search(r"load time\s*=\s*([0-9.]+)\s*ms", text, re.I); print(f"{float(m.group(1))/1000:.3f}" if m else "null")' "$RESULT")
 
     CPU_MODEL=$(lscpu 2>/dev/null | awk -F: '/Model name:/ { sub(/^[ \t]+/, "", $2); print $2; exit }')
     RAM_TOTAL=$(awk '/MemTotal:/ { printf "%.0f MB", $2/1024 }' /proc/meminfo 2>/dev/null)
@@ -235,6 +297,7 @@ while [ "$RUN_INDEX" -le "$RUNS" ]; do
         echo "{"
         echo "  \"experiment_id\": $(printf '%s' "$EXPERIMENT_ID" | json_escape),"
         echo "  \"date\": $(printf '%s' "$START_ISO" | json_escape),"
+        echo "  \"timestamp\": $(printf '%s' "$START_ISO" | json_escape),"
         echo "  \"run_number\": $RUN_NO,"
         echo "  \"status\": $(printf '%s' "$STATUS" | json_escape),"
         echo "  \"error_message\": $(printf '%s' "$ERROR_MESSAGE" | json_escape),"
@@ -250,10 +313,16 @@ while [ "$RUN_INDEX" -le "$RUNS" ]; do
         echo "  \"workload\": $(printf '%s' "$WORKLOAD" | json_escape),"
         echo "  \"prompt_file\": $(printf '%s' "$PROMPT_FILE" | json_escape),"
         echo "  \"llama_binary\": $(printf '%s' "$LLAMA" | json_escape),"
+        echo "  \"llama_command\": $(printf '%q ' "${LLAMA_CMD[@]}" | json_escape),"
+        echo "  \"git_commit\": $(printf '%s' "$GIT_COMMIT" | json_escape),"
         echo "  \"context_length\": $CONTEXT,"
+        echo "  \"context_size\": $CONTEXT,"
         echo "  \"generation_tokens_requested\": $TOKENS,"
+        echo "  \"generation_tokens\": $TOKENS,"
+        echo "  \"threads\": $THREADS,"
         echo "  \"gpu_layers\": $GPU_LAYERS,"
         echo "  \"temperature\": $TEMP,"
+        echo "  \"model_load_time\": $MODEL_LOAD_TIME,"
         echo "  \"total_time\": $TOTAL_TIME,"
         echo "  \"time_to_first_token\": null,"
         echo "  \"cpu\": $(printf '%s' "$CPU_MODEL" | json_escape),"
@@ -267,4 +336,4 @@ while [ "$RUN_INDEX" -le "$RUNS" ]; do
     RUN_INDEX=$((RUN_INDEX + 1))
 done
 
-python3 "$BASE/experiments/scripts/parse_results.py" --base "$BASE"
+python3 "$BASE/experiments/scripts/parse_results.py" --base "$BASE" --overwrite

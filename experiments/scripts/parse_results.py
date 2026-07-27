@@ -8,6 +8,7 @@ import argparse
 import csv
 import json
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from statistics import mean
 
@@ -25,6 +26,7 @@ CSV_COLUMNS = [
     "prompt_eval_tps",
     "decode_tps",
     "time_to_first_token",
+    "model_load_time",
     "total_time",
     "ram_usage",
     "vram_usage",
@@ -42,11 +44,14 @@ EVAL_RE = re.compile(
     r"^\s*eval time\s*=\s*([0-9.]+)\s*ms\s*/\s*(\d+)\s*tokens\s*\(\s*([0-9.]+)\s*tokens per second",
     re.IGNORECASE | re.MULTILINE,
 )
+LOAD_RE = re.compile(r"load time\s*=\s*([0-9.]+)\s*ms", re.IGNORECASE)
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--base", default=str(Path.home() / "llm-research"))
+    parser.add_argument("--output", default=None, help="CSV output path. Defaults to results/processed/benchmark-results.csv.")
+    parser.add_argument("--overwrite", action="store_true", help="Replace an existing output CSV.")
     return parser.parse_args()
 
 
@@ -65,6 +70,7 @@ def parse_perf(result_path: Path) -> dict:
 
     prompt_match = PROMPT_RE.search(text)
     eval_match = EVAL_RE.search(text)
+    load_match = LOAD_RE.search(text)
 
     return {
         "prompt_eval_time_ms": prompt_match.group(1) if prompt_match else "",
@@ -73,6 +79,7 @@ def parse_perf(result_path: Path) -> dict:
         "eval_time_ms": eval_match.group(1) if eval_match else "",
         "generated_tokens": eval_match.group(2) if eval_match else "",
         "decode_tps": eval_match.group(3) if eval_match else "",
+        "model_load_time": f"{float(load_match.group(1)) / 1000:.3f}" if load_match else "",
     }
 
 
@@ -110,9 +117,31 @@ def avg_value(csv_path: Path, column: str) -> str:
     return f"{mean(values):.3f}"
 
 
+def metadata_value(metadata: dict, key: str) -> str:
+    value = metadata.get(key, "")
+    if value is None:
+        return ""
+    return str(value)
+
+
+def output_path(base: Path, requested: str | None, overwrite: bool) -> Path:
+    default_output = base / "results" / "processed" / "benchmark-results.csv"
+    output = Path(requested).expanduser() if requested else default_output
+    if not output.is_absolute():
+        output = base / output
+    if output.exists() and not overwrite:
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        return output.with_name(f"{output.stem}-{stamp}{output.suffix}")
+    return output
+
+
 def build_row(run_dir: Path) -> dict:
     metadata = read_json(run_dir / "metadata.json")
     perf = parse_perf(run_dir / "result.txt")
+
+    # TODO: Accurate TTFT requires streaming token timestamps from llama.cpp.
+    # Batch stdout captured in result.txt cannot distinguish first-token timing reliably.
+    time_to_first_token = metadata_value(metadata, "time_to_first_token")
 
     return {
         "experiment_id": metadata.get("experiment_id", run_dir.name),
@@ -126,7 +155,8 @@ def build_row(run_dir: Path) -> dict:
         "generated_tokens": perf["generated_tokens"],
         "prompt_eval_tps": perf["prompt_eval_tps"],
         "decode_tps": perf["decode_tps"],
-        "time_to_first_token": metadata.get("time_to_first_token", ""),
+        "time_to_first_token": time_to_first_token,
+        "model_load_time": metadata_value(metadata, "model_load_time") or perf["model_load_time"],
         "total_time": metadata.get("total_time", ""),
         "ram_usage": max_value(run_dir / "system-monitor.csv", "ram_used_mb"),
         "vram_usage": max_value(run_dir / "gpu-monitor.csv", "memory_used_mb"),
@@ -140,14 +170,13 @@ def main() -> int:
     args = parse_args()
     base = Path(args.base).expanduser()
     raw_root = base / "results" / "raw"
-    processed = base / "results" / "processed"
-    output = processed / "benchmark-results.csv"
+    output = output_path(base, args.output, args.overwrite)
 
     rows = []
     for metadata_path in sorted(raw_root.glob("*/*/*/*/run*/metadata.json")):
         rows.append(build_row(metadata_path.parent))
 
-    processed.mkdir(parents=True, exist_ok=True)
+    output.parent.mkdir(parents=True, exist_ok=True)
     with output.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=CSV_COLUMNS)
         writer.writeheader()
