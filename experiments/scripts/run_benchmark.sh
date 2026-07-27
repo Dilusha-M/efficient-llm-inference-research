@@ -320,7 +320,7 @@ while [ "$RUN_INDEX" -le "$RUNS" ]; do
     [ -n "$TTFT" ] || TTFT="null"
     TOKEN_COUNTS=$(python3 "$BASE/experiments/scripts/count_tokens.py" \
         --tokenizer "$(dirname "$LLAMA")/llama-tokenize" --model "$MODEL_PATH" \
-        --prompt-file "$PROMPT_FILE" --result "$RUNTIME_LOG" 2>/dev/null || echo "{}")
+        --prompt-file "$PROMPT_FILE" --result "$RESULT" 2>/dev/null || echo "{}")
     PROMPT_TOKENS=$(python3 -c 'import json,sys; value=json.loads(sys.argv[1]).get("prompt_tokens"); print(value if value is not None else "null")' "$TOKEN_COUNTS")
     GENERATED_TOKENS=$(python3 -c 'import json,sys; value=json.loads(sys.argv[1]).get("generated_tokens"); print(value if value is not None else "null")' "$TOKEN_COUNTS")
     MODEL_LOAD_TIME=$(python3 -c 'import re,sys; from pathlib import Path; text=Path(sys.argv[1]).read_text(errors="replace") if Path(sys.argv[1]).exists() else ""; m=re.search(r"load time\s*=\s*([0-9.]+)\s*ms", text, re.I); print(f"{float(m.group(1))/1000:.3f}" if m else "null")' "$RUNTIME_LOG")

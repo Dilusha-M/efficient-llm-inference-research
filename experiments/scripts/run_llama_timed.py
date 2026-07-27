@@ -43,6 +43,11 @@ def main() -> int:
                         stdout_buffer.extend(chunk)
                         if re.search(rb"\[(?:Start|Begin)\s+(?:thinking|answer|response)\]", stdout_buffer, re.IGNORECASE):
                             first_output_ns = time.monotonic_ns()
+                        elif chunk.strip():
+                            # --simple-io has no optional answer markers;
+                            # with --no-display-prompt, stdout starts with
+                            # generated output.
+                            first_output_ns = time.monotonic_ns()
             sys.stdout.buffer.write(chunk)
             sys.stdout.buffer.flush()
 

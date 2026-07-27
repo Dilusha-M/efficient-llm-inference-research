@@ -1,8 +1,9 @@
 import tempfile
 import unittest
+import json
 from pathlib import Path
 
-from experiments.scripts.parse_results import parse_perf
+from experiments.scripts.parse_results import build_row, parse_perf
 
 
 class ParsePerfTests(unittest.TestCase):
@@ -30,6 +31,21 @@ eval rate = 10.00 tok/s
         self.assertEqual(parsed["model_load_time"], "1.235")
         self.assertEqual(parsed["prompt_tokens"], "10.0")
         self.assertEqual(parsed["generated_tokens"], "20.0")
+
+    def test_build_row_uses_saved_ttft_and_metadata_load_time(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run_dir = Path(directory)
+            (run_dir / "result.txt").write_text("Final model response\n\nanswer\n", encoding="utf-8")
+            (run_dir / "time-to-first-token.txt").write_text("1.234567\n", encoding="utf-8")
+            metadata = {
+                "experiment_id": "test", "time_to_first_token": None,
+                "generated_tokens": None, "model_load_time": "1.235",
+            }
+            (run_dir / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+            row = build_row(run_dir)
+
+        self.assertEqual(row["time_to_first_token"], "1.234567")
+        self.assertEqual(row["model_load_time"], "1.235")
 
     def test_parses_perf_context_counters_in_any_order(self):
         output = """\

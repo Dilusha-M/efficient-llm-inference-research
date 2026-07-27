@@ -8,6 +8,7 @@ import argparse
 import csv
 import json
 import re
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from statistics import mean
@@ -193,6 +194,34 @@ def metadata_value(metadata: dict, key: str) -> str:
     return str(value)
 
 
+def generated_tokens_from_result(run_dir: Path, metadata: dict) -> str:
+    """Recover generated tokens from cleaned results for older runs."""
+    result_path = run_dir / "result.txt"
+    binary = Path(metadata.get("llama_binary", ""))
+    model = Path(metadata.get("model_path", ""))
+    tokenizer = binary.with_name("llama-tokenize") if binary.name else Path()
+    if not result_path.exists() or not tokenizer.is_file() or not model.is_file():
+        return ""
+    try:
+        text = result_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    match = re.search(r"Final model response\s*(.*?)(?=\n\s*\Z)", text, re.IGNORECASE | re.DOTALL)
+    if not match or not match.group(1).strip():
+        return ""
+    try:
+        tokenized = subprocess.run(
+            [str(tokenizer), "-m", str(model), "--stdin", "--show-count"],
+            input=match.group(1).strip().encode("utf-8"), capture_output=True,
+            check=False, timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    output = tokenized.stdout.decode("utf-8", errors="replace") + tokenized.stderr.decode("utf-8", errors="replace")
+    count = re.search(r"Total number of tokens:\s*(\d+)", output)
+    return count.group(1) if count else ""
+
+
 def output_path(base: Path, requested: str | None, overwrite: bool) -> Path:
     default_output = base / "results" / "processed" / "benchmark-results.csv"
     output = Path(requested).expanduser() if requested else default_output
@@ -210,6 +239,14 @@ def build_row(run_dir: Path, debug: bool = False) -> dict:
 
     # TTFT requires streaming token timestamps and is not available from llama.cpp perf summary.
     time_to_first_token = metadata_value(metadata, "time_to_first_token")
+    if not time_to_first_token:
+        try:
+            time_to_first_token = (run_dir / "time-to-first-token.txt").read_text(encoding="utf-8").strip()
+        except OSError:
+            pass
+    generated_tokens = perf["generated_tokens"] or metadata_value(metadata, "generated_tokens")
+    if not generated_tokens or generated_tokens == "null":
+        generated_tokens = generated_tokens_from_result(run_dir, metadata)
 
     return {
         "experiment_id": metadata.get("experiment_id", run_dir.name),
@@ -220,7 +257,7 @@ def build_row(run_dir: Path, debug: bool = False) -> dict:
         "workload": metadata.get("workload", ""),
         "context_length": metadata.get("context_length", ""),
         "prompt_tokens": perf["prompt_tokens"] or metadata_value(metadata, "prompt_tokens"),
-        "generated_tokens": perf["generated_tokens"] or metadata_value(metadata, "generated_tokens"),
+        "generated_tokens": generated_tokens,
         "prompt_eval_tps": perf["prompt_eval_tps"],
         "decode_tps": perf["decode_tps"],
         "time_to_first_token": time_to_first_token,
