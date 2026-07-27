@@ -1,0 +1,72 @@
+warning: no usable GPU found, --gpu-layers option will be ignored
+warning: one possible reason is that llama.cpp was compiled without GPU support
+warning: consult docs/build.md for compilation instructions
+
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b10110-8f5ab832c
+model      : /home/dilusha/llm-research/models/Qwen/Qwen3.5-2B-GGUF/Qwen3.5-2B-Q4_K_M.gguf
+ftype      : Q4_K - Medium
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> You are reviewing production-quality Python for an inference benchmark. Implement the function below in Python using only the standard library.
+
+Task:
+Implement `summarize_decode_speeds(lines)` where `lines` is an iterable of strings. Return a dictionary with exactly these keys:
+
+* `count`: number of valid decode records
+* `min_tps`: minimum valid tps, or `None` when there are no valid records
+* `max_tps`: maximum valid tps, or `None` when there are no valid records
+* `avg_tps`: arithmetic mean  ... (truncated)
+
+[Start thinking]
+
+Let me break down this task:
+
+1. I need to implement `summarize_decode_speeds(lines)` that processes a list of strings
+2. Each line should be split into tokens, where each token contains `event=decode` and `tps=<value>`
+3. Valid record: after splitting, contains `event=decode` and `tps=<value>` where:
+   - `value` is a finite, strictly positive decimal (float)
+   - `value` is not -inf, inf, nan
+   - `value` is not 0
+   - `value` is not negative
+4. Must handle duplicates - if the same tps appears again, treat as malformed
+5. Must ignore non-decode events and malformed lines
+6. Must ignore non-string items in the iterable
+7. Must return a dictionary with exactly these keys: count, min_tps, max_tps, avg_tps
+
+Let me write the implementation:
+
+```python
+def summarize_decode_speeds(lines):
+    """
+    Summarize decode speeds from a list of strings.
+    
+    Args:
+        lines: iterable of strings
+        
+    Returns:
+        dict with keys: count, min_tps, max
+
+[ Prompt: 32.3 t/s | Generation: 12.9 t/s ]
+
+
+Exiting...
