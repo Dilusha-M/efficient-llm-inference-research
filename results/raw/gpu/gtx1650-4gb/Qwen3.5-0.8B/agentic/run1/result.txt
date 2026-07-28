@@ -1,0 +1,201 @@
+Input prompt
+
+You are simulating a senior coding-agent design review without external tools, internet access, shell commands, package installation, or file-system inspection. Work only from the specification and artifacts below. Be concrete enough that another engineer could implement and test the design.
+
+Project:
+A research project needs a command-line llama.cpp benchmark runner supporting CPU, CUDA, and Vulkan; model aliases from a configuration file; fixed workload prompts; performance output; hardware metadata; resource monitoring; and one metadata file per run. Raw output must remain available for manual audit. The runner must distinguish a failed model run from missing optional monitoring data.
+
+Existing constraints:
+* Each condition is repeated three times and compared manually using each run's `response.txt`/raw response plus metrics.
+* The default context is 4096, generation limit 256, temperature 0.7, and CPU thread count 1; a workload may override context explicitly.
+* Workloads are `chat`, `batch`, `coding`, `summarization`, `agentic`, and `world_knowledge`.
+* The runner must not mix results if model file, backend, hardware label, context, generation limit, prompt, temperature, GPU layers, build, or driver environment changes.
+* Monitors may be unavailable or sampled sparsely. A model process may fail after creating partial output.
+
+Required deliverables:
+1. Requirements and invariants: list inputs, artifacts, success/failure states, and the experimental identity tuple. Identify at least one ambiguity that must be resolved before implementation.
+2. State-machine workflow: describe the lifecycle from validation through launch, monitoring, process exit, and finalization, including what happens on timeout, OOM, malformed performance output, and monitor failure.
+3. Auditable design: propose shell/Python component boundaries, a metadata schema, atomic-write or partial-file conventions, and how to preserve stdout/stderr and the exact prompt used.
+4. Analysis integrity: explain how to prevent a failed run or variable generated-token count from producing a misleading throughput comparison, and how a parser should treat unknown llama.cpp output formats.
+5. Test plan: provide at least six tests, including one simulated backend failure, one missing monitor, one prompt containing spaces/newlines, one partial output, and one changed prompt hash.
+6. Pre-merge review: name the three highest-risk design flaws in your proposal and the concrete changes that would fix them.
+
+Use these exact headings: Requirements and Invariants; State Machine; Auditable Design; Analysis Integrity; Test Plan; Pre-merge Review. Keep the design implementation-oriented and avoid claiming that a metric is available if the specification does not guarantee it.
+
+Final model response
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b10110-8f5ab832c
+model      : /home/dilusha/llm-research/models/Qwen/Qwen3.5-0.8B-GGUF/Qwen3.5-0.8B-Q8_0.gguf
+ftype      : Q8_0
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> You are simulating a senior coding-agent design review without external tools, internet access, shell commands, package installation, or file-system inspection. Work only from the specification and artifacts below. Be concrete enough that another engineer could implement and test the design.
+
+Project:
+A research project needs a command-line llama.cpp benchmark runner supporting CPU, CUDA, and Vulkan; model aliases from a configuration file; fixed workload prompts; performance output; hardware me ... (truncated)
+# Requirements and Invariants
+
+**Experimental Identity Tuple:**
+`Runner = "LlamaRunner"`
+`Context = 4096`
+`GenLimit = 256`
+`Temp = 0.7`
+`Threads = 1`
+`Workloads = ["chat", "batch", "coding", "summarization", "agentic", "world_knowledge"]`
+
+**Inputs:**
+- `config.yaml`: Model aliases, backend types (CUDA/Vulkan), context, generation limit, temperature, threads, workload selection, and optional metadata file paths.
+- `response.txt` (or raw output stream): The model's raw prompt, response, and metrics.
+- `metadata.txt`: Optional metadata file containing run-specific data (e.g., GPU metadata).
+
+**Artifacts:**
+- `summary.json`: Process metrics (memory, CPU, GPU, time, tokens).
+- `raw_output.txt`: Unmodified raw response for manual audit.
+- `run_metadata.json`: Run-specific metadata (e.g., environment, context, prompt hash).
+- `monitor.log` (optional): Monitoring data, which may be empty or missing.
+
+**Success States:**
+- `runner` initializes successfully.
+- `config` is parsed without errors.
+- `response.txt` is generated (if available).
+- `summary.json` and `run_metadata.json` are created.
+- `monitor.log` is written (if present/accessible).
+
+**Failure States:**
+- `config` parsing fails (syntax error, invalid key).
+- `response.txt` is missing (no file in directory).
+- `summary.json` is empty or corrupted.
+- `monitor.log` is missing or inaccessible.
+- `raw_output.txt` is missing or unreadable.
+- `summary.json` contains invalid memory or CPU values (OOM, negative time).
+- `monitor.log` is generated but contains no meaningful data.
+
+**Ambiguity to Resolve:**
+*The specification states that raw output must remain available for manual audit ("Raw output must remain available for manual audit"). However, it does not explicitly define how to handle a scenario where the system **cannot** generate raw output (e.g., no file system access, no network connectivity, or no model instance running).*
+*   **Resolution:** Implement a fallback strategy: if `response.txt` cannot be retrieved, the runner must generate a **placeholder** or **empty** file (`response.txt`) containing `no_output_available.txt` or a generic `empty_response.txt` that is read-only, rather than silently failing or producing a cryptic error message. This ensures the audit trail is preserved even under network failures or hardware obsolescence.
+
+***
+
+# State Machine Workflow
+
+The lifecycle of the `LlamaRunner` agent follows the state machine below. Transitions are handled via atomic operations or checkpointing.
+
+1.  **Initialize:**
+    *   **State:** `INITIAL`
+    *   **Action:** Load `config.yaml`, parse `metadata.txt` (if present), and set hardware metadata.
+    *   **Constraint:** Validate `context` (default 4096) and `generation_limit` (default 256). If overridden, apply new values.
+
+2.  **Validation & Launch:**
+    *   **State:** `VALIDATING`
+    *   **Action:** Perform model instance validation (check `response.txt` or file existence). Attempt to launch the llama.cpp process with the specified backend (CUDA/Vulkan).
+    *   **Constraint:** Do not mix results if model backend, hardware label, or driver environment changes.
+
+3.  **Monitoring:**
+    *   **State:** `MONITORING`
+    *   **Action:** Wait for process completion.
+    *   **Constraint:** Monitors may be unavailable or sampled sparsely. If a process fails to start or complete, the monitor is not written to.
+
+4.  **Process Exit:**
+    *   **State:** `EXITING`
+    *   **Action:** Wait for process termination.
+    *   **Constraint:** If `summary.json` is empty or invalid, exit immediately without generating `summary.json`.
+
+5.  **Finalization:**
+    *   **State:** `FINALIZED`
+    *   **Action:** Write `summary.json`, `raw_output.txt` (if available), and `run_metadata.json`. Log `monitor.log` (if populated).
+    *   **Constraint:** `raw_output.txt` is written unconditionally if it exists; otherwise, write an empty file.
+
+6.  **Timeout / OOM / Malformed Output:**
+    *   **State:** `FAILED`
+    *   **Action:** Trigger a `process_failed` event.
+    *   **Behavior:** Do not attempt to restart. Log a failure reason (e.g., "OOM", "Timeout", "Invalid Config"). Do not overwrite `summary.json`.
+
+***
+
+# Auditable Design
+
+**Shell/Python Component Boundaries:**
+*   **`config_loader.py`**: Handles YAML parsing, metadata file loading, and hardware metadata retrieval.
+*   **`run_engine.py`**: Orchestrates the llama.cpp launcher, manages process lifecycle, handles timeout/oom checks, and writes the final artifacts.
+*   **`process_manager.py`**: Manages the llama.cpp process, ensures it is not restarted, and monitors its exit status.
+*   **`output_writer.py`**: Handles the writing of `summary.json`, `raw_output.txt`, and `run_metadata.json`.
+
+**Metadata Schema:**
+All metadata is stored in JSON files or direct string fields within the output.
+*   `metadata.json`: `{ "env": "dev", "context": 4096, "gpu": { "type": "cuda", "version": "12.1", "layers": 4 }, "build": "nightly", "driver": "136.9" }`
+*   `raw_output.txt`: Contains the raw prompt, response, and metrics (if available).
+
+**Atomic-Write Convention:**
+*   **Atomic Writes:** `summary.json`, `raw_output.txt`, and `run_metadata.json` are written atomically using `atomic_write` (Python standard library) to prevent race conditions where intermediate files are overwritten.
+*   **Partial Writes:** `monitor.log` is written atomically if it exists. If a monitor fails, the log file remains empty.
+*   **Error Handling:** If `atomic_write` fails (e.g., permission denied, binary mismatch), the exception propagates to `process_failed`.
+
+**Preservation of Stdout/Stderr:**
+*   The `run_engine` writes `raw_output.txt` *only* if it can retrieve the raw response. If retrieval fails, the output is not written, but the process failure is logged. This ensures the *process* fails, but the *audit trail* is preserved.
+
+***
+
+# Analysis Integrity
+
+**Prevention of Misleading Throughput:**
+*   **Variable Counting:** The `token_count` variable in `summary.json` must be derived from the exact number of characters in the `response.txt` (including newline characters) using regex or string length calculation.
+*   **Tokenization:** The parser must tokenize the model response *before* calculating metrics. It should not use the model's internal tokenizer unless explicitly configured.
+*   **Partial Output Handling:** If the model fails to complete (OOM or timeout), `token_count` must be set to `0` or `None` in `summary.json`, rather than accumulating partial tokens. This prevents a "throughput comparison" where a slow process looks like high throughput relative to a fast one, or vice versa.
+
+**Handling Unknown llama.cpp Output Formats:**
+*   **Parser Strategy:** The `response.txt` parser must be flexible. It should attempt to parse the response using a standard llama.cpp tokenizer (e.g., from the `llama.cpp` library). If the format is unknown (e.g., binary stream, custom encoding), the parser should:
+    1.  Attempt standard tokenization.
+    2.  If the generated `tokens` list is empty, return a `None` or an empty string.
+    3.  If the parser fails to parse, write an empty `response.txt` file and log a warning, ensuring the process fails.
+*   **Safety:** Never hardcode a specific output format string; always fall back to standard llama.cpp behavior.
+
+***
+
+# Test Plan
+
+1.  **Backend Failure Simulation:** Run the runner against a model with a known backend (CUDA). Expect the process to fail with an `OOM` or `Timeout` error, and ensure `summary.json` is empty.
+2.  **Missing Monitor:** Run the runner against a model where monitoring data is missing (e.g., no GPU available, or monitoring service is down). Expect `monitor.log` to be empty and `summary.json` to be valid.
+3.  **Prompt with Spaces/Newlines:** Create a test prompt containing spaces and newlines. Expect the parser to handle them gracefully (or fail as per specification, but ensure the file is generated). Verify `raw_output.txt` contains the prompt and response.
+4.  **Partial Output:** Run the model multiple times with slightly different inputs. Expect `summary.json` to show varying `token_count` but consistent `memory_usage` (if memory is tracked) and `time` (if tracked). Ensure `response.txt` is generated even if partial.
+5.  **Changed Prompt Hash:** Generate two prompts with different hashes. Run the runner twice. Expect `summary.json` to distinguish between them based on the `prompt_hash` field in `run_metadata.json`.
+6.  **Hardware/Backend Mismatch:** Create a scenario where the runner is configured for CUDA but a CUDA-enabled backend is not installed, or vice versa. Expect the process to fail with a specific error code, and ensure `summary.json` does not attempt to write to a non-existent device.
+
+***
+
+# Pre-merge Review
+
+**Highest-Risk Design Flaws:**
+
+1.  **Ambiguity in "Missing Output" Handling:**
+    *   *Flaw:* The specification requires raw output for audit but does not specify what happens if the system cannot access the file system or model instance.
+    *   *Risk:* A user might expect a cryptic `File not found` error, whereas the design should ensure the audit trail (the file) is never lost, even if the process fails.
+    *   *Fix:* Implement a fallback strategy where if `response.txt` cannot be retrieved, a placeholder file (`no_output_available.txt`) containing a generic empty response is generated. This ensures the "raw output" requirement is met even under network obsolescence.
+
+2.  **Undefined Behavior for Unknown llama.cpp Formats:**
+    *   *Flaw:* The parser is not explicitly defined to handle binary or custom llama.cpp output formats.
+    *   *Risk:* If a model sends output in a binary format or a custom tokenizer, the runner might crash or generate incorrect metrics (e.g., counting bytes instead of tokens).
+    *   *Fix:* The parser must attempt standard llama.cpp tokenization first. If the parser fails to parse the output, it must write an empty `response.txt` and log a failure reason, preventing the runner from crashing and allowing the failure to be logged rather than silently ignored.
+
+3.  **Atomic-Write Overwrite Risk:**
+    *   *Flaw:* Writing `summary.json` or `raw_output.txt` atomically without ensuring the file system allows binary or large data writes.
+    *   *Risk:* If the process crashes during the write, the intermediate file might remain partially valid, or if the process restarts, the data might be corrupted.
+    *   *Fix:* Use the standard Python `atomic_write` module (via `llama.cpp` or a wrapper) to ensure atomicity. Additionally, add a check in the runner to only write to files if the `atomic_write` succeeds and the file exists.
