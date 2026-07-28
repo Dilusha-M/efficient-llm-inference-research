@@ -1,0 +1,194 @@
+
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b10110-8f5ab832c
+model      : /home/dilusha/llm-research/models/Qwen/Qwen3.6-35B-A3B-GGUF/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf
+ftype      : Q4_K - Medium
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> You are reviewing production-quality Python for an inference benchmark. Implement the function below in Python using only the standard library.
+
+Task:
+Implement `summarize_decode_speeds(lines)` where `lines` is an iterable of strings. Return a dictionary with exactly these keys:
+
+* `count`: number of valid decode records
+* `min_tps`: minimum valid tps, or `None` when there are no valid records
+* `max_tps`: maximum valid tps, or `None` when there are no valid records
+* `avg_tps`: arithmetic mean  ... (truncated)
+```python
+import math
+
+
+def summarize_decode_speeds(lines):
+    """
+    Parse lines of key=value pairs and compute summary statistics of tps values
+    from valid decode events.
+    
+    A record is valid if:
+    - The line is a string
+    - After splitting on whitespace, it contains both event=decode and tps=<value>
+    - tps=<value> is a finite, strictly positive decimal accepted by float()
+    - No duplicate keys with conflicting values (including duplicate tps with same value)
+    
+    Returns a dict with count, min_tps, max_tps, avg_tps.
+    """
+    count = 0
+    min_tps = None
+    max_tps = None
+    total_tps = 0.0
+    
+    for line in lines:
+        # Ignore non-string items
+        if not isinstance(line, str):
+            continue
+        
+        # Split on whitespace to get tokens
+        tokens = line.split()
+        
+        # Parse key=value pairs
+        # We need to track all keys and their values to detect duplicates
+        kv_pairs = {}
+        valid_kv = True
+        
+        for token in tokens:
+            if '=' not in token:
+                # Invalid token format, skip this record? 
+                # Actually, the problem says "after splitting on whitespace, it contains both event=decode and a tps=<value> field"
+                # So if there's a token without '=', we should still check for the required fields.
+                # But malformed lines are ignored. A token without '=' could be part of a malformed line.
+                # Let's be strict: each token should be key=value. If not, the line is malformed.
+                valid_kv = False
+                break
+            
+            key, _, value = token.partition('=')
+            if key in kv_pairs:
+                # Duplicate key
+                # If same value, treat as malformed too
+                if kv_pairs[key] != value:
+                    valid_kv = False
+                    break
+                else:
+                    # Same value duplicate, treat as malformed
+                    valid_kv = False
+                    break
+            kv_pairs[key] = value
+        
+        if not valid_kv:
+            continue
+        
+        # Check for event=decode
+        if kv_pairs.get('event') != 'decode':
+            continue
+        
+        # Check for tps
+        if 'tps' not in kv_pairs:
+            continue
+        
+        tps_str = kv_pairs['tps']
+        
+        # Parse tps value
+        try:
+            tps_val = float(tps_str)
+        except (ValueError, OverflowError):
+            continue
+        
+        # Check for finite and strictly positive
+        if not math.isfinite(tps_val):
+            continue
+        if tps_val <= 0:
+            continue
+        
+        # Valid record
+        count += 1
+        if min_tps is None or tps_val < min_tps:
+            min_tps = tps_val
+        if max_tps is None or tps_val > max_tps:
+            max_tps = tps_val
+        total_tps += tps_val
+    
+    if count == 0:
+        avg_tps = None
+    else:
+        avg_tps = round(total_tps / count, 3)
+    
+    return {
+        'count': count,
+        'min_tps': min_tps,
+        'max_tps': max_tps,
+        'avg_tps': avg_tps,
+    }
+
+
+if __name__ == "__main__":
+    # Demonstration lines:
+    # 1. Valid record
+    line1 = "event=decode tps=100.0"
+    # 2. Another key=value field (extra field, still valid)
+    line2 = "event=decode tps=50.5 extra=foo"
+    # 3. Non-decode event
+    line3 = "event=encode tps=200.0"
+    # 4. Malformed float
+    line4 = "event=decode tps=abc"
+    # 5. nan value
+    line5 = "event=decode tps=nan"
+    # 6. Duplicate key with same value (malformed)
+    line6 = "event=decode tps=100.0 tps=100.0"
+    # 7. Non-string item
+    line7 = 12345
+    # 8. Valid record whose tps requires rounding (avg will need rounding)
+    line8 = "event=decode tps=33.333"
+    
+    lines = [line1, line2, line3, line4, line5, line6, line7, line8]
+    
+    result = summarize_decode_speeds(lines)
+    print("Result:", result)
+    
+    # Expected summary:
+    # Valid records: line1 (tps=100.0), line2 (tps=50.5), line8 (tps=33.333)
+    # count = 3
+    # min_tps = 33.333
+    # max_tps = 100.0
+    # avg_tps = (100.0 + 50.5 + 33.333) / 3 = 183.833 / 3 = 61.277666... rounded to 61.278
+    expected = {
+        'count': 3,
+        'min_tps': 33.333,
+        'max_tps': 100.0,
+        'avg_tps': 61.278,
+    }
+    print("Expected:", expected)
+    
+    # Focused assertions to catch common incorrect implementations
+    # Assertion 1: Ensure that nan and inf values are excluded
+    nan_lines = ["event=decode tps=nan", "event=decode tps=inf", "event=decode tps=-inf"]
+    nan_result = summarize_decode_speeds(nan_lines)
+    assert nan_result['count'] == 0, f"Expected count=0 for nan/inf, got {nan_result['count']}"
+    assert nan_result['min_tps'] is None, f"Expected min_tps=None for nan/inf, got {nan_result['min_tps']}"
+    
+    # Assertion 2: Ensure that duplicate keys (even with same value) are treated as malformed
+    dup_lines = ["event=decode tps=100.0 tps=100.0", "event=decode tps=200.0 tps=200.0"]
+    dup_result = summarize_decode_speeds(dup_lines)
+    assert dup_result['count'] == 0, f"Expected count=0 for duplicate keys, got {dup_result['count']}"
+```
+
+[ Prompt: 354.1 t/s | Generation: 40.1 t/s ]
+
+
+Exiting...

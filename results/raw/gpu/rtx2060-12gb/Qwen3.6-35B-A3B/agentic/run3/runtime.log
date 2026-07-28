@@ -1,0 +1,203 @@
+
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b10110-8f5ab832c
+model      : /home/dilusha/llm-research/models/Qwen/Qwen3.6-35B-A3B-GGUF/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf
+ftype      : Q4_K - Medium
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> You are simulating a senior coding-agent design review without external tools, internet access, shell commands, package installation, or file-system inspection. Work only from the specification and artifacts below. Be concrete enough that another engineer could implement and test the design.
+
+Project:
+A research project needs a command-line llama.cpp benchmark runner supporting CPU, CUDA, and Vulkan; model aliases from a configuration file; fixed workload prompts; performance output; hardware me ... (truncated)
+Requirements and Invariants
+
+**Inputs**
+1.  **Configuration File**: YAML/JSON containing model aliases (mapping logical names to local file paths), global defaults (context=4096, gen_limit=256, temp=0.7, threads=1), and optional backend-specific overrides (e.g., GPU layers).
+2.  **Workload Definitions**: A set of six fixed prompts (`chat`, `batch`, `coding`, `summarization`, `agentic`, `world_knowledge`). These are static strings defined in the source or config.
+3.  **Hardware Metadata Source**: A mechanism to query OS-level hardware info (CPU model, RAM, GPU model/driver via `nvidia-smi` or Vulkan info) without installing external packages.
+4.  **llama.cpp Binary**: The executable to be run.
+
+**Artifacts**
+1.  **Raw Output (`response.txt`)**: The exact stdout/stderr captured from the `llama.cpp` process. Must be preserved regardless of success/failure.
+2.  **Performance Metrics (`metrics.json`)**: Parsed performance data (tokens/sec, time) extracted from `response.txt`.
+3.  **Metadata File (`run_metadata.json`)**: A single file per run containing the experimental identity, hardware info, config snapshot, and run status.
+4.  **Monitor Data (`monitor_log.csv`)**: Optional, sparse sampling of system resources (CPU/GPU utilization) during the run.
+
+**Success/Failure States**
+*   **Success**: Process exits with code 0, `response.txt` contains valid performance metrics, and `metrics.json` is parseable.
+*   **Failure (Process)**: Process exits with non-zero code, or is killed (OOM, timeout). `response.txt` exists but `metrics.json` may be partial or empty. Status in `run_metadata.json` is `FAILED`.
+*   **Failure (Monitor)**: Monitor data is missing or sparse. This is **not** a run failure. Status is `SUCCESS` (if process succeeded) or `FAILED` (if process failed), but with a flag `monitor_data_missing: true`.
+
+**Experimental Identity Tuple**
+To prevent mixing results, every run is identified by a hash of the following tuple:
+`{model_file_path, backend_type, hardware_label, context_size, generation_limit, prompt_hash, temperature, gpu_layers_count, llama_cpp_build_hash, driver_version}`
+
+**Ambiguity to Resolve**
+*   **Ambiguity**: "Performance Output" format. `llama.cpp` output format varies between versions (e.g., `prompt eval time`, `eval time`, `tokens per second`). The spec says "fixed workload prompts" and "performance output" but does not specify which metric defines "performance" (e.g., is it inference speed only, or include prompt processing?).
+*   **Resolution**: The parser must extract *all* available timing metrics and store them raw. The "primary performance metric" for comparison will be defined as `eval_time` (inference speed) if available, falling back to `total_time / tokens_generated`. If neither is parseable, the run is `FAILED`.
+
+State Machine
+
+1.  **Initialization**:
+    *   Load config, resolve model alias to absolute path.
+    *   Query hardware metadata (CPU, GPU, RAM, OS).
+    *   Compute experimental identity hash. Check if a previous run with this hash exists. If yes, abort or log warning.
+    *   Select workload prompt from fixed set.
+    *   Construct command line: `llama.cpp` binary + args (model, backend, context, temp, threads, prompt, etc.).
+
+2.  **Validation**:
+    *   Check model file exists.
+    *   Check `llama.cpp` binary exists and is executable.
+    *   Check backend compatibility (e.g., CUDA backend requires CUDA driver).
+    *   If validation fails, write `run_metadata.json` with status `VALIDATION_FAILED`, raw error, and exit. No process launch.
+
+3.  **Launch & Monitoring**:
+    *   Start `llama.cpp` process with stdout/stderr redirected to `response.txt` (append mode, atomic write safety).
+    *   Start monitor thread (if available) to sample CPU/GPU usage at sparse intervals (e.g., every 100ms). Write to `monitor_log.csv`.
+    *   If monitor fails to start, set `monitor_available: false`.
+
+4.  **Process Execution**:
+    *   Wait for process to exit or timeout (e.g., 300s).
+    *   **Timeout**: Kill process, set status `TIMEOUT`.
+    *   **OOM**: Process killed by OS. Set status `OOM`.
+    *   **Normal Exit**: Capture exit code.
+
+5.  **Finalization**:
+    *   Stop monitor.
+    *   Parse `response.txt`:
+        *   Extract raw performance metrics.
+        *   If parsing fails or no valid metrics found, set status `PARSE_FAILED` (if process exited 0) or `FAILED` (if process exited non-zero).
+        *   Generate `metrics.json`.
+    *   Write `run_metadata.json` atomically (write to temp file, then rename).
+    *   Return exit code: 0 if `SUCCESS`, 1 otherwise.
+
+**Special Cases**:
+*   **Partial Output**: If process dies mid-run, `response.txt` contains partial output. Parser attempts to extract any metrics present. If any valid metric is found, status is `PARTIAL_SUCCESS` with warning. If no metrics, `FAILED`.
+*   **Monitor Failure**: If monitor thread crashes or fails to write, `monitor_log.csv` is missing or empty. `run_metadata.json` records `monitor_data_missing: true`. This does not affect `SUCCESS`/`FAILED` status of the model run.
+
+Auditable Design
+
+**Component Boundaries**
+1.  **Config Loader (Python)**: Reads config, resolves aliases, validates types. No side effects.
+2.  **Hardware Querier (Python/Shell)**: Queries `lscpu`, `free`, `nvidia-smi` (if CUDA), `vulkaninfo` (if Vulkan). Returns dict.
+3.  **Runner (Python)**: Orchestrates launch, monitoring, and finalization. Uses `subprocess` for `llama.cpp`.
+4.  **Parser (Python)**: Parses `response.txt` using regex. Returns structured metrics.
+5.  **Metadata Writer (Python)**: Writes `run_metadata.json` atomically.
+
+**Metadata Schema (`run_metadata.json`)**
+```json
+{
+  "identity_hash": "sha256_of_tuple",
+  "timestamp": "ISO8601",
+  "status": "SUCCESS|FAILED|TIMEOUT|OOM|PARSE_FAILED|VALIDATION_FAILED",
+  "model": {
+    "path": "/absolute/path/to/model.gguf",
+    "alias": "my_model"
+  },
+  "backend": "CPU|CUDA|VULKAN",
+  "hardware": {
+    "cpu": "Intel Xeon",
+    "ram_gb": 64,
+    "gpu": "NVIDIA A100",
+    "driver_version": "535.104"
+  },
+  "config": {
+    "context": 4096,
+    "gen_limit": 256,
+    "temp": 0.7,
+    "threads": 1,
+    "gpu_layers": 0
+  },
+  "workload": "chat",
+  "prompt_hash": "sha256_of_prompt",
+  "monitor_data_available": true,
+  "performance": {
+    "tokens_per_second": 45.2,
+    "total_time_seconds": 5.6,
+    "raw_metrics": {...}
+  },
+  "error_message": "None"
+}
+```
+
+**Atomic-Write/Partial-File Conventions**
+*   `response.txt`: Written by `llama.cpp` directly. No modification by runner.
+*   `metrics.json` and `run_metadata.json`: Write to `<filename>.tmp`, then `os.rename()` to final name. This ensures no partial files are read.
+*   `monitor_log.csv`: Append mode. If monitor fails, file may be incomplete. Runner checks file integrity (line count) and flags if sparse.
+
+**Preserving Raw Output**
+*   `response.txt` is the ground truth. All parsing is done from this file.
+*   The exact prompt used is stored in `run_metadata.json` as `prompt_hash` (and optionally `prompt_text` if size permits).
+
+Analysis Integrity
+
+**Preventing Misleading Throughput Comparisons**
+1.  **Token Count Normalization**: Throughput is calculated as `tokens_generated / total_time`. If `tokens_generated` is 0 (e.g., due to early exit), throughput is undefined. The parser must reject such runs.
+2.  **Failed Run Exclusion**: Runs with status `FAILED`, `TIMEOUT`, `OOM`, or `PARSE_FAILED` are excluded from aggregate metrics. Only `SUCCESS` and `PARTIAL_SUCCESS` (with valid metrics) are included.
+3.  **Identity Hash Enforcement**: The experimental identity tuple ensures that comparisons are only made between runs with identical model, backend, hardware, and config. If any parameter changes, a new identity hash is generated, preventing mixing.
+
+**Handling Unknown Output Formats**
+1.  **Regex-Based Extraction**: The parser uses a list of regex patterns for known llama.cpp output formats (v1, v2, etc.).
+2.  **Fallback Strategy**: If no pattern matches, the parser logs a warning and sets status `PARSE_FAILED`.
+3.  **Raw Metrics Storage**: All captured lines from `response.txt` are stored in `run_metadata.json` under `raw_metrics` for manual audit. This allows engineers to manually parse new formats without code changes.
+
+Test Plan
+
+1.  **Simulated Backend Failure**:
+    *   **Setup**: Use CUDA backend but set `CUDA_VISIBLE_DEVICES=""` to simulate no GPU.
+    *   **Expected**: Process exits with error. `response.txt` contains error message. `run_metadata.json` status `FAILED`. `metrics.json` empty or invalid.
+2.  **Missing Monitor**:
+    *   **Setup**: Run with monitor disabled or simulate monitor thread crash.
+    *   **Expected**: Process succeeds. `monitor_log.csv` missing or empty. `run_metadata.json` has `monitor_data_available: false`. Status `SUCCESS`.
+3.  **Prompt with Spaces/Newlines**:
+    *   **Setup**: Use workload `agentic` which may contain complex prompts. Ensure prompt is passed correctly via command line (quoted).
+    *   **Expected**: Process runs successfully. `prompt_hash` matches expected hash. `response.txt` contains generated text.
+4.  **Partial Output (OOM)**:
+    *   **Setup**: Set very low memory limit (if possible) or use a huge model with low RAM. Simulate OOM by killing process after partial output.
+    *   **Expected**: Process killed. `response.txt` has partial output. `run_metadata.json` status `OOM`. `metrics.json` may have partial metrics or be empty.
+5.  **Changed Prompt Hash**:
+    *   **Setup**: Modify one character in the `chat` workload prompt.
+    *   **Expected**: New identity hash generated. Run is treated as distinct. Previous run results are not mixed.
+6.  **Malformed Performance Output**:
+    *   **Setup**: Use a custom `llama.cpp` build that outputs garbage instead of metrics.
+    *   **Expected**: Parser fails to extract metrics. Status `PARSE_FAILED`. `run_metadata.json` contains raw output for audit.
+
+Pre-merge Review
+
+**Highest-Risk Design Flaws**
+
+1.  **Flaw**: **Race Condition in Atomic Write**.
+    *   **Risk**: If the monitor thread and the parser/metadata writer run concurrently, and the monitor fails to release a file lock, the atomic write may fail or produce corrupted metadata.
+    *   **Fix**: Ensure monitor thread terminates and releases all resources before starting the parsing and metadata writing phase. Use a barrier or join mechanism.
+
+2.  **Flaw**: **Prompt Injection/Shell Injection**.
+    *   **Risk**: If prompts are passed as shell arguments without proper escaping, special characters (e.g., `$`, `` ` ``) could be interpreted by the shell, altering the prompt or causing security issues.
+    *   **Fix**: Use `subprocess.run` with `shell=False` and pass arguments as a list. Ensure prompts are not concatenated into a single string with shell separators.
+
+3.  **Flaw**: **Ambiguous "Success" on Partial Metrics**.
+    *   **Risk**: A run that generates only 5 tokens due to an error might still produce a "tokens/sec" metric, which could be misleadingly high or low, and be classified as `PARTIAL_SUCCESS`. This could skew aggregate performance data.
+    *   **Fix**: Define a minimum token threshold (e.g., 10 tokens) for `PARTIAL_SUCCESS`. If fewer tokens are generated, classify as `FAILED` unless the error is known and expected (e.g., early stopping). Log a warning for all partial runs.
+
+[ Prompt: 329.4 t/s | Generation: 39.8 t/s ]
+
+
+Exiting...

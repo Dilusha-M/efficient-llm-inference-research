@@ -1,0 +1,104 @@
+
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b10110-8f5ab832c
+model      : /home/dilusha/llm-research/models/Qwen/Qwen3.6-35B-A3B-GGUF/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf
+ftype      : Q4_K - Medium
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> Summarize the following technical document. Focus on the experimental design, measurement methodology, limitations, and reproducibility implications.
+
+Technical document:
+
+Large language model inference on consumer hardware is constrained by a combination of memory capacity, memory bandwidth, compute throughput, software backend maturity, and workload shape. Unlike training, inference is often dominated by repeated matrix-vector operations during autoregressive decoding. During prompt processing ... (truncated)
+Based on the technical document provided, here is a summary focusing on the experimental design, measurement methodology, limitations, and reproducibility implications for benchmarking Large Language Model (LLM) inference on consumer hardware.
+
+### 1. Experimental Design
+
+The framework emphasizes a structured, tuple-based approach to defining experimental conditions to ensure distinct and comparable results.
+
+*   **Workload Diversity:** Experiments must cover distinct inference patterns to avoid bias. Recommended workloads include:
+    *   **Chat:** General explanatory generation.
+    *   **Coding:** Structured reasoning and code production.
+    *   **Summarization:** Long prompts to stress prompt processing and context handling.
+    *   **Batch:** Multiple unrelated tasks in one prompt to test instruction separation.
+    *   **Agentic:** Simulated planning/reviewing without external tools.
+    *   *Constraint:* All prompts must be fixed, deterministic, and versioned (via file path or hash) to prevent tokenization or content variability from skewing results.
+*   **Condition Definition:** A benchmark condition is defined as a tuple containing: model file, backend, hardware label, context length, generation limit, prompt file, temperature, GPU layer count, llama.cpp build, and driver environment. Any change in these parameters constitutes a new experimental condition.
+*   **Run Repetition:** A minimum of three runs per condition is required to detect instability caused by thermal throttling, background processes, or power management. More runs are recommended for statistical confidence.
+*   **Objective Clarity:** Researchers must explicitly define whether they are measuring **maximum achievable throughput** (controlled environments, warmed-up models) or **realistic interactive performance** (ordinary desktop settings, recorded system load).
+
+### 2. Measurement Methodology
+
+The methodology prioritizes separating prompt processing from decoding and preserving raw data for auditability.
+
+*   **Metric Separation:**
+    *   **Prompt Evaluation:** Measured via matrix-matrix operations during parallel token processing.
+    *   **Decoding:** Measured via autoregressive generation (one token at a time), dominated by reading weights and key-value (KV) cache data.
+    *   *Note:* These metrics should not be aggregated into a single "throughput" number as they are dominated by different hardware constraints.
+*   **Data Collection Sources:**
+    *   **Primary Metrics:** Extracted from `llama.cpp` performance output (prompt/decode evaluation times, tokens per second).
+    *   **Raw Preservation:** Full `stdout` and `stderr` streams must be saved to allow for re-parsing and manual inspection, as output formatting varies between versions.
+    *   **Resource Monitoring:**
+        *   **GPU:** `nvidia-smi` for power, temperature, VRAM usage, and utilization.
+        *   **CPU/RAM:** Linux interfaces (`/proc/stat`, `/proc/meminfo`, etc.).
+        *   *Handling Missing Data:* Missing metrics should be recorded as `null`/`blank` rather than causing run failure; the system must distinguish between failed model runs and missing monitoring data.
+    *   **Time to First Token (TTFT):** Recorded only if reliably measurable by the runtime; otherwise, recorded as `null`. External wall-clock timing is acceptable for total generation time.
+*   **Output Structure:**
+    *   **Raw Artifacts:** The primary source of truth (raw logs, metadata files).
+    *   **Derived Artifacts:** Processed CSV files for analysis. These must be regenerated from raw data if parser logic changes.
+    *   **CSV Schema:** Must include experiment ID, date, hardware label, backend, model, workload, context/generation lengths, prompt/decode throughput, TTFT, total time, resource usage (RAM/VRAM/Power/Temp), and status (success/failure).
+
+### 3. Limitations
+
+The document identifies several threats to validity and inherent constraints of consumer hardware benchmarking.
+
+*   **Hardware & System Variability:**
+    *   Consumer systems suffer from thermal throttling, variable power management, and background process interference.
+    *   GPU utilization metrics from tools like `nvidia-smi` are sampled and may lag behind instantaneous workload changes; they indicate context rather than causal kernel efficiency.
+    *   CPU performance is heavily influenced by thread counts, memory speed/channel configuration, and core heterogeneity, not just core count.
+*   **Software & Quantization Nuances:**
+    *   **Quantization:** Lower precision (e.g., Q4) reduces memory but does not guarantee linear throughput gains due to dequantization overhead, kernel maturity, and memory alignment.
+    *   **Backend Differences:** Comparing CPU, CUDA, and Vulkan involves comparing hardware *and* software maturity/driver versions.
+    *   **KV Cache Impact:** Performance degrades significantly as context length increases because the KV cache grows, potentially causing VRAM overflow or paging.
+*   **Statistical & Generalization Limits:**
+    *   Three repetitions are sufficient for median/robustness checks but insufficient for rigorous confidence intervals or characterizing all variance sources.
+    *   A single prompt or small set of devices cannot represent broad real-world usage.
+    *   **Survivorship Bias:** Ignoring failed runs (e.g., out-of-memory errors on low-VRAM GPUs) creates a false impression of hardware capability.
+
+### 4. Reproducibility Implications
+
+Reproducibility is achieved through strict documentation, raw data preservation, and separation of concerns.
+
+*   **Metadata as Evidence:** Hardware labels (e.g., `cpu/ryzen5600`) are for grouping only. Reproducibility requires full system metadata: CPU model, RAM capacity, GPU model, VRAM, driver version, OS, and environment info.
+*   **Auditability Chain:**
+    1.  **Raw Run Directory:** Contains exact `llama.cpp` output and raw monitor logs.
+    2.  **Metadata File:** Records configuration (model path, backend path, prompt hash, temperature, etc.).
+    3.  **Monitor CSV:** Supporting evidence of resource usage.
+    4.  **Analysis CSV:** Derived artifact that can be regenerated from #1 and #2.
+*   **Handling Failures:** Failed runs must be preserved with error messages and context. They are valid data points indicating resource constraints.
+*   **Version Control:** Prompts, model files (via resolved path/hash), and backend binaries must be versioned. Changing any element of the experimental tuple invalidates direct comparison with previous runs.
+*   **Simplicity:** The framework advocates for simple automation (shell scripts + Python standard library) over complex orchestration to ensure the experiment can be reproduced on older or minimal systems. Every result must be traceable to a specific command line, hardware snapshot, and prompt.
+
+[ Prompt: 415.9 t/s | Generation: 39.7 t/s ]
+
+
+Exiting...
