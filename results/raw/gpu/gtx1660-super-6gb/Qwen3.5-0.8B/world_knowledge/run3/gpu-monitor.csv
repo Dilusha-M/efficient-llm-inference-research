@@ -1,0 +1,4 @@
+timestamp,power_w,temperature_c,memory_used_mb,memory_total_mb,utilization_gpu_percent
+2026/07/28 09:42:35.936, 37.16, 51, 9, 6144, 1
+2026/07/28 09:42:36.965, 38.12, 51, 1018, 6144, 0
+2026/07/28 09:42:37.991, 115.10, 57, 1026, 6144, 54

@@ -1,0 +1,159 @@
+Input prompt
+
+You are simulating a senior coding-agent design review without external tools, internet access, shell commands, package installation, or file-system inspection. Work only from the specification and artifacts below. Be concrete enough that another engineer could implement and test the design.
+
+Project:
+A research project needs a command-line llama.cpp benchmark runner supporting CPU, CUDA, and Vulkan; model aliases from a configuration file; fixed workload prompts; performance output; hardware metadata; resource monitoring; and one metadata file per run. Raw output must remain available for manual audit. The runner must distinguish a failed model run from missing optional monitoring data.
+
+Existing constraints:
+* Each condition is repeated three times and compared manually using each run's `response.txt`/raw response plus metrics.
+* The default context is 4096, generation limit 256, temperature 0.7, and CPU thread count 1; a workload may override context explicitly.
+* Workloads are `chat`, `batch`, `coding`, `summarization`, `agentic`, and `world_knowledge`.
+* The runner must not mix results if model file, backend, hardware label, context, generation limit, prompt, temperature, GPU layers, build, or driver environment changes.
+* Monitors may be unavailable or sampled sparsely. A model process may fail after creating partial output.
+
+Required deliverables:
+1. Requirements and invariants: list inputs, artifacts, success/failure states, and the experimental identity tuple. Identify at least one ambiguity that must be resolved before implementation.
+2. State-machine workflow: describe the lifecycle from validation through launch, monitoring, process exit, and finalization, including what happens on timeout, OOM, malformed performance output, and monitor failure.
+3. Auditable design: propose shell/Python component boundaries, a metadata schema, atomic-write or partial-file conventions, and how to preserve stdout/stderr and the exact prompt used.
+4. Analysis integrity: explain how to prevent a failed run or variable generated-token count from producing a misleading throughput comparison, and how a parser should treat unknown llama.cpp output formats.
+5. Test plan: provide at least six tests, including one simulated backend failure, one missing monitor, one prompt containing spaces/newlines, one partial output, and one changed prompt hash.
+6. Pre-merge review: name the three highest-risk design flaws in your proposal and the concrete changes that would fix them.
+
+Use these exact headings: Requirements and Invariants; State Machine; Auditable Design; Analysis Integrity; Test Plan; Pre-merge Review. Keep the design implementation-oriented and avoid claiming that a metric is available if the specification does not guarantee it.
+
+Final model response
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b10110-8f5ab832c
+model      : /home/dilusha/llm-research/models/Qwen/Qwen3.5-0.8B-GGUF/Qwen3.5-0.8B-Q8_0.gguf
+ftype      : Q8_0
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> You are simulating a senior coding-agent design review without external tools, internet access, shell commands, package installation, or file-system inspection. Work only from the specification and artifacts below. Be concrete enough that another engineer could implement and test the design.
+
+Project:
+A research project needs a command-line llama.cpp benchmark runner supporting CPU, CUDA, and Vulkan; model aliases from a configuration file; fixed workload prompts; performance output; hardware me ... (truncated)
+# Requirements and Invariants
+
+The primary failure mode in this implementation is the inability to distinguish between a **complete, validated model run** (which includes the model file, backend, and metadata) and a **missing optional monitoring data** event (which has no corresponding model file). This ambiguity is critical because the system treats both as "failed" or "missing," potentially leading to false positives in performance reporting or incorrect run tracking.
+
+**Ambiguity to Resolve:**
+Before implementing, the design must explicitly define which metadata files are **required** versus which are **optional and optional for failure**. If a run produces partial monitoring data (e.g., "Monitor: CPU used: 45%" but no `metrics.txt`) but the model file and backend are present, the system must classify this as a **partial success** (monitoring not present, but other data present) rather than a full failure. The specification states "A model process may fail after creating partial output," implying that if the full model file is missing, the process is invalid. The ambiguity lies in the case where only part of the required metadata is present while the full model file exists.
+
+**Experimental Identity Tuple:**
+*   **Model File:** `llama.cpp-001.pth`
+*   **Backend:** `backend-v1.2.0`
+*   **Hardware Label:** `cuda-12.0`
+*   **Context:** `4096`
+*   **Generation Limit:** `256`
+*   **Temperature:** `0.7`
+*   **Thread Count:** `1`
+*   **Workload:** `coding`
+*   **Metadata File:** `metrics.txt` (Present)
+
+---
+
+# State Machine
+
+The lifecycle of the command-line runner is defined by the following states:
+
+1.  **INITIALIZATION:** The agent checks the configuration file for required fields (`model_file`, `backend`, `hardware`, `context`, `gen_limit`, `temperature`, `threads`, `workload`). If any are missing, the process enters **FAILED** state.
+2.  **VALIDATION:** The agent reads the model file and backend metadata. If the model file is missing or empty, the process enters **FAILED**. If the model file is present but backend metadata is missing, the process enters **FAILED**.
+3.  **LOADING:** The agent checks hardware metadata (CPU, CUDA, Vulkan) and GPU layer count. If the hardware label is missing or the GPU layers do not match the required count (e.g., `cuda-12.0` requires 1 layer but the model is `cuda-12.0` with 2 layers), the process enters **FAILED**.
+4.  **LAUNCH:** The agent executes the llama.cpp command. It spawns a new process (`llama.cpp`) to generate the prompt and metrics.
+5.  **RUNNING:** The process runs the workload. The agent monitors for output.
+    *   **Timeout:** If the process fails to complete within the configured time limit (default `30s`), the process is killed, and the **RUNNING** process is **FAILED**.
+    *   **OOM:** If the model process exceeds memory limits (default `128MB` for small models, `256MB` for larger), the process is killed, and the **RUNNING** process is **FAILED**.
+6.  **MONITORING:** The agent polls the hardware monitor (e.g., `iostat`). If the monitor is unavailable or the sampling rate is too low, the agent waits indefinitely or returns a "monitor failed" error. If monitoring succeeds, it collects `metrics.txt`.
+7.  **PROCESS_EXIT:** The process exits successfully. The agent checks if `metrics.txt` exists.
+    *   **Success (Partial):** If `metrics.txt` exists but the full model file is missing, the process is **PASSED**.
+    *   **Success (Complete):** If `metrics.txt` exists and the full model file is present, the process is **PASSED**.
+    *   **Failure:** If `metrics.txt` is missing or the process fails, the process is **FAILED**.
+8.  **FINALIZATION:** The agent writes the final run summary, including the model file path, backend, hardware, context, generation limit, temperature, threads, and the exact prompt used, to `run_summary.txt`.
+
+---
+
+# Auditable Design
+
+To ensure the runner can audit its own behavior and preserve raw output, the following boundaries and conventions are proposed:
+
+*   **Shell/Python Component Boundaries:**
+    *   **Shell:** Responsible for argument parsing, configuration file validation, and orchestrating the process lifecycle (start, run, stop).
+    *   **Python:** Responsible for model file loading, backend metadata retrieval, hardware check, command execution, and raw output capture.
+    *   **No Cross-Session Access:** The Python agent must not read from or write to the Shell. All file writes must go through the Python agent.
+*   **Metadata Schema:**
+    *   Each run generates a single `run_metadata.json` file containing:
+        ```json
+        {
+          "model_file": "path/to/llama.cpp-001.pth",
+          "backend": "backend-v1.2.0",
+          "hardware": "cuda-12.0",
+          "context": 4096,
+          "gen_limit": 256,
+          "temperature": 0.7,
+          "threads": 1,
+          "workload": "coding",
+          "prompt": "user: [prompt]\nassistant: [response]",
+          "timestamp": "2023-06-01T10:30:00Z",
+          "output_bytes": 2456789,
+          "stdout_bytes": "raw_stdout",
+          "stderr_bytes": "raw_stderr"
+        }
+        ```
+    *   This schema ensures that even if the output is truncated, the metadata remains accurate.
+*   **Atomic-Write Conventions:**
+    *   **File Writes:** All file operations (model file, backend file, monitor file, summary file) must be atomic using `atomic_write` (e.g., `f.seek(0)`, `f.truncate()`, `f.write()`) or `open()` with `mode='w+'` + `atomic_write` on Windows.
+    *   **Output Preservation:** Raw output (stdout/stderr) is captured via `stdout_bytes` and `stderr_bytes` fields. It is **NOT** written to a summary file to preserve the exact prompt and raw bytes for manual audit. The summary file contains a canonicalized version of the output.
+*   **Prompt Usage:** The exact prompt used is hardcoded in the metadata schema and saved to `run_metadata.json`. It is never modified by the agent.
+
+---
+
+# Analysis Integrity
+
+To prevent misleading throughput comparisons and variable token counts:
+
+1.  **Failed Run Handling:** If a run fails due to the model file being missing, the parser must skip the rest of the run entirely. It should only write the metadata for runs that complete successfully. This prevents a "partial success" run from being falsely classified as "failed" based on missing metrics.
+2.  **Variable Generated-Token Count:** The parser must track the exact number of tokens generated per token bucket (e.g., `llama.cpp` default). If the model file is missing, the parser should log a warning but continue generating the metrics for the *next* run. It should not drop the token count. The throughput calculation compares the *average* generated tokens across all *successful* runs, ensuring no single failed run skew the average.
+3.  **Unknown Format Parsing:** If the model output is malformed (e.g., missing newline at end of response, missing `assistant:` key), the parser should treat this as a **failed run** and skip that run. It should not attempt to parse the partial output. The parser must be robust enough to handle any possible llama.cpp output format, defaulting to a valid structure if a key is absent.
+
+---
+
+# Test Plan
+
+The following tests verify the design's robustness against common failure modes and edge cases:
+
+1.  **Backend Failure Test:** The runner should detect if the llama.cpp backend is missing in the configuration and proceed to load the model file, but log a warning and return to the initialization state without generating the metrics.
+2.  **Monitor Failure Test:** The runner should detect if hardware monitoring (e.g., `iostat`) is unavailable or if the sampling rate is too low. It should wait until the monitor is available or the timeout expires, recording the state as "monitor failed" and returning a "failed" result.
+3.  **Prompt Containing Spaces/Newlines:** The runner should detect if the generated prompt contains newlines or spaces. It should treat this as a malformed prompt and exit immediately, returning a "failed" result. It should not attempt to parse the output.
+4.  **Partial Output Test:** The runner should detect if the model process generates incomplete output (missing `assistant:` key). It should treat this as a failed run and skip the metrics generation for that run.
+5.  **Changed Prompt Hash Test:** The runner should detect if the user input changes between runs. It should save the original prompt to `run_metadata.json` for the next run and re-verify the prompt was changed.
+6.  **Simulated Backend Failure (via config):** A test scenario where the configuration explicitly disables the backend feature, forcing the runner to fail immediately upon configuration validation.
+
+---
+
+# Pre-merge Review
+
+**Three Highest-Risk Design Flaws:**
+
+1.  **The Ambiguity of "Partial vs. Missing" Metadata:** The primary risk is distinguishing between a run where *only* monitoring data is present (and the full model file exists) versus a run where the full model file is missing. This ambiguity allows the system to incorrectly report partial success when it should report failure, potentially leading to false positive performance claims.
+2.  **Loss of Raw Output for Audit:** The requirement to preserve the exact prompt and raw stdout/stderr bytes in the summary file while omitting them from the metadata creates a conflict with the "raw output must remain available" requirement. It necessitates a two-tier approach (metadata + raw output) where raw output is not written to a summary file, which contradicts the "one metadata file per run" constraint if interpreted strictly.
+3.  **Token Count Drop on Missing Model File:** The risk of the parser dropping the generated token count if the model file is missing is significant. It forces the system to generate metrics for the *next* run, which could theoretically skew the overall average throughput if the model file is missing for the first run, but it also prevents the system from detecting the failure of the current run correctly.

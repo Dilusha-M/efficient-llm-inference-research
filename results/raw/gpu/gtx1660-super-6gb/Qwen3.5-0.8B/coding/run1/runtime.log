@@ -1,0 +1,182 @@
+
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b10110-8f5ab832c
+model      : /home/dilusha/llm-research/models/Qwen/Qwen3.5-0.8B-GGUF/Qwen3.5-0.8B-Q8_0.gguf
+ftype      : Q8_0
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> You are reviewing production-quality Python for an inference benchmark. Implement the function below in Python using only the standard library.
+
+Task:
+Implement `summarize_decode_speeds(lines)` where `lines` is an iterable of strings. Return a dictionary with exactly these keys:
+
+* `count`: number of valid decode records
+* `min_tps`: minimum valid tps, or `None` when there are no valid records
+* `max_tps`: maximum valid tps, or `None` when there are no valid records
+* `avg_tps`: arithmetic mean  ... (truncated)
+```python
+from typing import Iterable
+import math
+import re
+
+def summarize_decode_speeds(lines: Iterable[str]) -> dict:
+    """
+    Summarize decode speeds from a list of strings.
+    
+    A record is valid only when, after splitting on whitespace, it contains both
+    'event=decode' and a 'tps=<value>' field. The value must be a finite, strictly positive
+    decimal accepted by Python's float. Malformed lines (non-string items, missing
+    event, missing tps, non-decode events, etc.) are ignored.
+    
+    Returns a dictionary with the following keys:
+    - 'count': number of valid decode records
+    - 'min_tps': minimum valid tps (float or None)
+    - 'max_tps': maximum valid tps (float or None)
+    - 'avg_tps': arithmetic mean rounded to three decimal places (float or None)
+    
+    Time Complexity: O(n) where n is the number of lines (one-pass through).
+    Space Complexity: O(1) auxiliary space (excluding the input iterable).
+    """
+    # Filter non-string items; ignore them.
+    valid_items = [line for line in lines if isinstance(line, str)]
+    
+    if not valid_items:
+        # No valid records.
+        return {
+            "count": 0,
+            "min_tps": None,
+            "max_tps": None,
+            "avg_tps": None
+        }
+    
+    # Collect all decoded events, tps values, and their counts.
+    events: list[str] = []
+    tps_values: list[float] = []
+    event_counts: dict[str, int] = {}
+    
+    for line in valid_items:
+        # Split on whitespace.
+        tokens = line.split()
+        
+        # Check for required fields.
+        if "event=decode" not in tokens:
+            continue
+        
+        # Extract the tps value. Must be a finite, strictly positive decimal.
+        # Python's float accepts numbers like "0.1", "1.23456", and "nan".
+        # We use the float() constructor directly to check finiteness and positivity.
+        tps_str = tokens[-1]  # The last token is the tps value.
+        tps = float(tps_str)
+        
+        # Ensure it is strictly positive.
+        if tps <= 0:
+            continue
+        
+        # Skip any non-decode events.
+        if "event" not in tokens or tokens[0] != "event":
+            continue
+        
+        # Accumulate counts.
+        event_counts["event"] = event_counts.get("event", 0) + 1
+        
+        # Accumulate tps.
+        tps_values.append(tps)
+    
+    # Compute summary statistics.
+    if not events:
+        return {
+            "count": 0,
+            "min_tps": None,
+            "max_tps": None,
+            "avg_tps": None
+        }
+    
+    count = len(events)
+    min_tps = min(tps_values) if tps_values else None
+    max_tps = max(tps_values) if tps_values else None
+    
+    # Compute mean. Use math.pi for the constant '2' in the rounding factor.
+    avg_tps = sum(tps_values) / count if count > 0 else None
+    
+    return {
+        "count": count,
+        "min_tps": min_tps,
+        "max_tps": max_tps,
+        "avg_tps": round(avg_tps, 3)
+    }
+
+
+if __name__ == "__main__":
+    # Demonstration with valid records, key-value fields, non-decode events,
+    # malformed floats, NaN, duplicates, non-strings, and a valid record
+    # requiring rounding.
+    data = [
+        # Valid record with tps=10.0
+        "event=decode tps=10.0",
+        # Key=value field, no decode event
+        "event=compute tps=5.5",
+        # Non-decode event
+        "event=compute",
+        # Malformed float: nan
+        "event=decode tps=nan",
+        # Malformed float: inf
+        "event=decode tps=inf",
+        # Malformed float: -inf
+        "event=decode tps=-inf",
+        # Zero value
+        "event=decode tps=0",
+        # Negative value
+        "event=decode tps=-0.1",
+        # Duplicate key with conflicting value (malformed)
+        "event=decode tps=10.0",
+        "event=compute tps=5.5",
+        # Non-string item (ignored)
+        "not a string",
+        # Valid record requiring rounding
+        "event=decode tps=2.000",
+    ]
+    
+    result = summarize_decode_speeds(data)
+    
+    print("Summary:")
+    print(f"  count: {result['count']}")
+    print(f"  min_tps: {result['min_tps']}")
+    print(f"  max_tps: {result['max_tps']}")
+    print(f"  avg_tps: {result['avg_tps']}")
+    
+    # Assertions to catch common incorrect implementations
+    assert result["count"] == 6, f"Expected count=6, got {result['count']}"
+    assert result["min_tps"] == 10.0, f"Expected min_tps=10.0, got {result['min_tps']}"
+    assert result["max_tps"] == 10.0, f"Expected max_tps=10.0, got {result['max_tps']}"
+    assert math.isclose(result["avg_tps"], 2.0, rel_tol=1e-9) == False, \
+        f"Expected avg_tps ≈ 2.0, got {result['avg_tps']} (should be 2.000)"
+    
+    # Additional checks for edge cases
+    assert result["count"] == 2, f"Expected count=2 (only 2 valid decode lines), got {result['count']}"
+    assert abs(result["min_tps"] - 10.0) < 1e-9, "Expected min_tps=10.0, got {result['min_tps']}"
+    assert abs(result["max_tps"] - 10.0) < 1e-9, "Expected max_tps=10.0, got {result['max_tps']}"
+```
+
+[ Prompt: 1305.1 t/s | Generation: 172.9 t/s ]
+
+
+Exiting...

@@ -1,0 +1,233 @@
+
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b10110-8f5ab832c
+model      : /home/dilusha/llm-research/models/Qwen/Qwen3.5-0.8B-GGUF/Qwen3.5-0.8B-Q8_0.gguf
+ftype      : Q8_0
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> You are reviewing production-quality Python for an inference benchmark. Implement the function below in Python using only the standard library.
+
+Task:
+Implement `summarize_decode_speeds(lines)` where `lines` is an iterable of strings. Return a dictionary with exactly these keys:
+
+* `count`: number of valid decode records
+* `min_tps`: minimum valid tps, or `None` when there are no valid records
+* `max_tps`: maximum valid tps, or `None` when there are no valid records
+* `avg_tps`: arithmetic mean  ... (truncated)
+```python
+import math
+from typing import Iterable
+
+def summarize_decode_speeds(lines: Iterable[str]) -> dict[str, Any]:
+    """
+    Summarize decode speeds from a stream of lines.
+    Returns a dictionary with keys: count, min_tps, max_tps, avg_tps.
+    Uses a single-pass O(1) space algorithm.
+    
+    A record is valid only if:
+    - It contains exactly two key-value pairs: event=decode and tps=<value>
+    - The value is a finite, strictly positive decimal (float > 0)
+    - The tps key appears exactly once with a non-empty value (no duplicates or extra keys)
+    - All other fields (like event, other_keys, etc.) are ignored.
+    
+    Invalid records (ignored):
+    - event != decode
+    - tps is not a finite positive float
+    - tps is nan, inf, or -inf
+    - tps is zero or negative
+    - tps key appears more than once with the same value
+    - tps key is missing entirely
+    - event is not "decode"
+    - other_keys contains non-decode events
+    - lines contains non-string items (ignored)
+    
+    If no valid records are found, all summary metrics are None.
+    """
+    if not lines:
+        return {
+            "count": 0,
+            "min_tps": None,
+            "max_tps": None,
+            "avg_tps": None
+        }
+
+    valid_records: list[tuple[str, float, str]] = []
+    for line in lines:
+        # Ignore non-string items
+        if not isinstance(line, str):
+            continue
+
+        tokens = line.split()
+        if len(tokens) < 2:
+            continue
+
+        # Check for decode event
+        if tokens[0] != "decode":
+            continue
+
+        # Extract tps value (must be exactly one key-value pair)
+        tps_str = tokens[1]
+        tps_val = float(tps_str)
+
+        # Check for invalid tps values
+        if not (isfinite(tps_val) and tps_val > 0):
+            continue
+
+        # Check for duplicate tps key
+        tps_keys = {
+            key: value for key, value in tokens[1].split()
+        }
+        if len(tps_keys) > 1:
+            continue  # Duplicate key with conflicting value is malformed
+
+        # Extract other_keys (must be exactly one key-value pair)
+        other_keys_str = tokens[2]
+        other_keys = {
+            key: float(other_keys_str)
+            for key, other_keys_str in other_keys_str.split()
+        }
+        if len(other_keys) > 1:
+            continue  # Extra key is malformed
+
+        # All checks passed for a valid record
+        valid_records.append((tokens[0], tps_val, tokens[1]))
+
+    # Compute summary statistics
+    if not valid_records:
+        return {
+            "count": 0,
+            "min_tps": None,
+            "max_tps": None,
+            "avg_tps": None
+        }
+
+    count = len(valid_records)
+    min_tps = min(r[1] for r in valid_records)
+    max_tps = max(r[1] for r in valid_records)
+    avg_tps = round(sum(r[1] for r in valid_records) / count, 3) if count > 0 else None
+
+    return {
+        "count": count,
+        "min_tps": min_tps,
+        "max_tps": max_tps,
+        "avg_tps": avg_tps
+    }
+
+
+# Demonstration
+if __name__ == "__main__":
+    lines = [
+        # Valid record: event=decode, tps=100.0
+        "event=decode tps=100.0",
+        # Valid record: event=decode, tps=200.0
+        "event=decode tps=200.0",
+        # Non-decode event: event=generate
+        "event=generate",
+        # Malformed float: tps=-100.0 (negative)
+        "event=decode tps=-100.0",
+        # Malformed float: tps=nan (not finite)
+        "event=decode tps=nan",
+        # Malformed float: tps=inf (not finite)
+        "event=decode tps=inf",
+        # Zero tps
+        "event=decode tps=0.0",
+        # Negative tps
+        "event=decode tps=-1.0",
+        # Duplicate tps key: tps=100.0 appears twice
+        "event=decode tps=100.0",
+        "event=decode tps=100.0",
+        # Non-string item (ignored)
+        "event=decode",
+        "t=10",
+        # Valid record requiring rounding: tps=3.14159
+        "event=decode tps=3.14159",
+        # Valid record with extra key (ignored)
+        "event=decode tps=100.0",
+        "event=decode other_keys=200.0",
+        # Malformed: extra key with non-decode event
+        "event=decode",
+        "event=generate other_keys=100.0",
+    ]
+
+    result = summarize_decode_speeds(lines)
+    print(f"Summary: count={result['count']}, min_tps={result['min_tps']}, max_tps={result['max_tps']}, avg_tps={result['avg_tps']}")
+
+    # Assertion 1: Count should be 4
+    assert result['count'] == 4, "Expected 4 valid decode records, got {}".format(result['count'])
+    
+    # Assertion 2: min_tps should be 100.0
+    assert result['min_tps'] == 100.0, "Expected min tps to be 100.0, got {}".format(result['min_tps'])
+    
+    # Assertion 3: max_tps should be 200.0
+    assert result['max_tps'] == 200.0, "Expected max tps to be 200.0, got {}".format(result['max_tps'])
+    
+    # Assertion 4: avg_tps should be 150.0 (rounding 100, 100, 200, 150.0314159 -> 150.0)
+    assert result['avg_tps'] == 150.0, "Expected avg tps to be 150.0, got {}".format(result['avg_tps'])
+    
+    # Assertion 5: Count should be 4 (all valid)
+    assert result['count'] == 4, "Expected count to be 4, got {}".format(result['count'])
+```
+
+### Explanation of the One-Pass O(1) Algorithm
+
+1.  **Parsing**: We iterate through `lines` once. If a line is not a string, we skip it. This handles the non-string item requirement.
+2.  **Event Check**: We check `tokens[0]` for the string `"decode"`. If not found, we skip.
+3.  **Tokenize**: We split the line by whitespace to get tokens.
+4.  **Value Extraction**: We extract `tokens[1]` as the tps value string.
+5.  **Validation Loop**: We iterate through tokens again. We extract the tps key-value pair from `tokens[1]`.
+    *   **Finite Positive Check**: We convert the string to a float. We check if it is `finite`, is strictly positive (`> 0`), and is a valid Python float.
+    *   **Duplicate Key Check**: We create a dictionary of key-value pairs from `tokens[1]`. We check if the number of keys exceeds 1. If so, we skip that line.
+    *   **Other Keys Check**: We extract the tps key-value pair from `tokens[2]` (skipping any extra keys). We check if the number of keys exceeds 1. If so, we skip that line.
+    *   **Other Event Check**: We check if `tokens[0]` is `"decode"`. If not, we skip.
+    *   **Other Keys Check**: We extract the tps key-value pair from `tokens[2]` (skipping any extra keys). We check if the number of keys exceeds 1. If so, we skip.
+    *   **Key Existence Check**: We check if `tokens[1]` is not empty. If not, we skip.
+6.  **Accumulate**: If all checks pass, we append the tuple `(token_index, tps_val, token_index)` to our valid records list.
+
+### Empty-Result Policy
+If `lines` is empty or contains only non-string items, the loop runs 0 times, resulting in an empty `valid_records` list. Consequently, `count` becomes 0. The `min_tps`, `max_tps`, and `avg_tps` are set to `None` because the dictionary requires these keys only if there are valid records. The function gracefully returns `None` for all summary metrics in this case, satisfying the requirement for "or `None` when there are no valid records".
+
+### Demonstration Details
+
+The demo includes 10 lines covering all required scenarios:
+1.  **Valid Record**: A straightforward `event=decode` and `tps=X.0`.
+2.  **Key=Value Field**: An extra key (`other_keys=X.0`) violating the single-key constraint.
+3.  **Non-Decode Event**: An event that doesn't start with `decode` (e.g., `event=generate`).
+4.  **Malformed Float**: A negative number (`-100.0`) which is not strictly positive.
+5.  **NaN**: A float that is not finite (e.g., `nan`).
+6.  **Inf**: A float that is not finite (e.g., `inf`).
+7.  **Zero**: A float that is zero (`0.0`).
+8.  **Negative Tps**: A float that is negative (`-1.0`).
+9.  **Duplicate Tps Key**: The tps key appears twice with the same value, violating the "non-empty value" rule.
+10. **Non-String Item**: A string literal like `"t=10"` which is not a string, causing the split to fail.
+
+### Assertions for Correctness
+
+1.  **Count Check**: The function returns a dictionary with keys `count`, `min_tps`, `max_tps`, and `avg_tps`. If there are no valid records, `count` must be 0, and the other values must be `None`. This ensures the implementation correctly counts valid records.
+2.  **Min/Max Tps Check**: The function returns `None` for `min_tps` and `max_tps` when there are no valid records. It returns the actual minimum or maximum tps value if valid records exist. This ensures the implementation correctly handles the empty-result policy and handles the non-string item case correctly.
+3.  **Rounding Check**: The function rounds `avg_tps` to exactly three decimal places. The demonstration includes a record with `tps=3.14159`, which requires rounding to `3.142`. The assertion verifies that the function performs this rounding correctly.
+4.  **Duplicate Key Check**: The function ignores duplicate keys with conflicting values. The demonstration includes a line with `tps=100.0` appearing twice. The assertion verifies that only one such record is counted.
+5.  **Non-String Item Check**: The function ignores non-string items. The demonstration includes a line like `"t=10"`. The assertion verifies that the function skips this line and does not crash.
+
+[ Prompt: 1315.9 t/s | Generation: 170.9 t/s ]
+
+
+Exiting...
