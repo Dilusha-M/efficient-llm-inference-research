@@ -1,0 +1,84 @@
+
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b10110-8f5ab832c
+model      : /home/dilusha/llm-research/models/Qwen/Qwen3.5-0.8B-GGUF/Qwen3.5-0.8B-Q8_0.gguf
+ftype      : Q8_0
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> Summarize the following technical document. Focus on the experimental design, measurement methodology, limitations, and reproducibility implications.
+
+Technical document:
+
+Large language model inference on consumer hardware is constrained by a combination of memory capacity, memory bandwidth, compute throughput, software backend maturity, and workload shape. Unlike training, inference is often dominated by repeated matrix-vector operations during autoregressive decoding. During prompt processing ... (truncated)
+### Executive Summary
+This guide outlines a comprehensive methodology for building a **consumer-hardware LLM inference benchmark**. The framework prioritizes **separation of prompt processing and decoding**, **preservation of raw output**, and **robust hardware metadata**. By adhering to specific reproducibility and reproducibility principles, researchers can isolate hardware variability from software, model, or workload factors.
+
+### 1. Experimental Design
+*   **Core Architecture:** The experiment must distinguish between **prompt evaluation** and **decoding**. Prompt processing involves parallel matrix-matrix operations, while decoding is sequential, requiring separate throughput measurement.
+*   **Workload Selection:**
+    *   **General:** Chat or explanatory response generation.
+    *   **Structured:** Coding or reasoning tasks.
+    *   **Context-heavy:** Summarization with long prompts.
+    *   **Batch/Agentic:** Grouped questions or agent planning without external tools.
+    *   **Fixed Prompts:** Essential for controlling tokenization, latency, and generation behavior.
+*   **Hardware Constraints:**
+    *   **Memory:** Consumer GPUs may saturate under heavy caching; context length and layer count are critical variables.
+    *   **Backends:** CPU (via `llama.cpp`), CUDA (NVIDIA GPUs), and Vulkan are distinct ecosystems. Cross-platform comparison requires detailed documentation of versions and drivers.
+
+### 2. Measurement Methodology
+*   **Raw Data Integrity:** The **raw output stream** must be preserved in a result file. `llama.cpp` output formatting varies by version, so a parser is required to extract metrics (e.g., tokens/sec, speed) while leaving the file available for manual inspection.
+*   **Throughput Metrics:**
+    *   **Prompt:** Tokens per second (TPS).
+    *   **Decode:** Tokens per second (TPS).
+    *   **Time to First Token (TTFT):** Useful for latency estimation, but must be recorded if it cannot be reliably extracted from the model output without altering the process.
+*   **Resource Monitoring:**
+    *   **GPU:** Use `nvidia-smi` to track power draw, temperature, and utilization.
+    *   **CPU:** Use `/proc/stat` and `/proc/meminfo` to capture thread usage and memory occupancy.
+    *   **RAM:** OS-level cache usage and total memory.
+*   **Repetition:** Minimum of **3 runs per condition** is recommended to reveal instability. Results should be stored separately; aggregated data alone may hide variance.
+
+### 3. Limitations & Reproducibility Implications
+*   **Thermal & Power Variance:** Consumer hardware is affected by thermal throttling and power management. Performance can degrade even on "normal" desktop settings.
+*   **Hardware Metadata vs. Labels:**
+    *   **Labels (e.g., `cpu/ryzen5600`)** are path conventions, not substitutes for metadata.
+    *   **Metadata** includes model, backend, hardware model, VRAM, OS, and driver info. The label must be paired with the full metadata tuple to ensure reproducibility.
+*   **Threats to Validity:**
+    *   **Sampling Variability:** Generated token counts can fluctuate due to sampling; use fixed limits.
+    *   **Quality vs. Speed:** Throughput does not always correlate with model quality (e.g., lower quantization may degrade output).
+    *   **Backend Bias:** Comparing hardware alone ignores software maturity differences.
+    *   **Context Sensitivity:** Attention cache size impacts decoding speed; large contexts degrade throughput.
+*   **Failure Handling:** Failures (e.g., missing model, insufficient VRAM) are valid data points. Excluding failed runs introduces **survivorship bias**.
+
+### 4. Implementation Guide
+*   **Tuple Structure:** Create a test tuple containing: `model_file, backend, hardware_label, context_length, generation_limit, prompt_file, temperature, layer_count, build, driver_env`.
+*   **Automation:** Use simple shell scripts or Python standard libraries for invocation and CSV parsing. Avoid complex orchestration frameworks early on to ensure traceability.
+*   **Documentation:** The experiment must explicitly state whether the goal is **Maximum Throughput** (closed loops, controlled thermal) or **Realistic Consumer Hardware** (natural desktop settings, system load monitoring).
+
+### 5. Output Format
+*   **Processed CSV:** Used for analysis (plots, summaries), but **not** to replace raw artifacts.
+*   **Schema:** Include identifiers, timestamps, hardware label, backend, model details, workload info, raw metrics (TPS, tokens), and status.
+*   **Reproducible Data:** Store model aliases, resolved paths, and metadata in the run directory alongside the raw output file.
+
+[ Prompt: 7022.1 t/s | Generation: 200.1 t/s ]
+
+
+Exiting...
