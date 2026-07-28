@@ -10,9 +10,9 @@ BASE="$HOME/llm-research"
 
 BACKEND="cuda"
 HARDWARE="rtx2060-12gb"
-MODEL="GEMMA4_12B"
+MODEL="QWEN36_27B"
 RUNS=3
-
+GPU_LAYERS=46
 
 # ==========================
 # Workloads
@@ -47,7 +47,8 @@ do
         --hardware "$HARDWARE" \
         --model "$MODEL" \
         --workload "$WORKLOAD" \
-        --runs "$RUNS"
+        --runs "$RUNS" \
+	--gpu-layers "$GPU_LAYERS"
 
 done
 

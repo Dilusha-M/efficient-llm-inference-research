@@ -1,0 +1,237 @@
+
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b10110-8f5ab832c
+model      : /home/dilusha/llm-research/models/Qwen/Qwen3.6-27B-GGUF/Qwen3.6-27B-Q4_K_M.gguf
+ftype      : Q4_K - Medium
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> You are simulating a senior coding-agent design review without external tools, internet access, shell commands, package installation, or file-system inspection. Work only from the specification and artifacts below. Be concrete enough that another engineer could implement and test the design.
+
+Project:
+A research project needs a command-line llama.cpp benchmark runner supporting CPU, CUDA, and Vulkan; model aliases from a configuration file; fixed workload prompts; performance output; hardware me ... (truncated)
+# Requirements and Invariants
+
+### Inputs
+1.  **Configuration File (`config.yaml`)**:
+    *   `models`: Map of alias (e.g., `llama-3-8b`) to absolute path of `.gguf` file.
+    *   `workloads`: Map of workload name to prompt text. Prompts may contain newlines and special characters.
+    *   `defaults`: Context length (`ctx_size`), generation limit (`n_predict`), temperature (`temp`), CPU threads (`n_threads`).
+2.  **Command Line Arguments**:
+    *   `--model <alias>`: The model to benchmark.
+    *   `--backend <cpu|cuda|vulkan>`: The compute backend.
+    *   `--ctx <int>`: Optional override for context size.
+    *   `--label <string>`: Hardware identifier (e.g., `RTX4090-24GB`).
+3.  **Environment**:
+    *   `llama.cpp` binary path (assumed in `$PATH` or specified via env var `LLAMA_BIN`).
+    *   Optional monitoring tools (`nvtop`, `htop`, `vulkaninfo`) availability.
+
+### Artifacts (Per Run)
+Each run produces a directory `results/<timestamp>_<model>_<backend>_<label>/`:
+1.  `meta.json`: Immutable run configuration and timing metadata.
+2.  `response.txt`: The raw generated text output from the model.
+3.  `metrics.json`: Parsed performance metrics (tokens/sec, load time, etc.).
+4.  `stdout.log` / `stderr.log`: Raw console output from `llama.cpp`.
+5.  `monitor.log`: Time-series resource usage (if available).
+6.  `prompt.txt`: The exact prompt string used, including hidden newlines.
+
+### Success/Failure States
+1.  **Success**: `llama.cpp` exits with code 0, `metrics.json` is valid, and `response.txt` is non-empty.
+2.  **Model Failure**: `llama.cpp` exits non-zero, crashes, or fails to parse metrics. The run is marked `status: failed`. Artifacts are still preserved for audit.
+3.  **Monitor Failure**: Monitoring tool crashes or is unavailable. The run is marked `status: success` (if model succeeded) but `monitor_status: unavailable`. This must **not** invalidate the benchmark.
+4.  **Timeout**: Run exceeds `max_runtime` (e.g., 30 mins). Process killed. Status: `timeout`.
+
+### Experimental Identity Tuple
+To prevent result mixing, each run is uniquely identified by the hash of this tuple:
+`(model_path_hash, backend, hardware_label, ctx_size, n_predict, temp, n_threads, prompt_sha256, gpu_layers, llama_cpp_build_hash, driver_env_hash)`
+
+If any element changes, a new run ID is generated. If the same tuple is executed again, the runner may skip or append (configurable), but never overwrite existing valid data silently.
+
+### Ambiguity to Resolve
+**Ambiguity**: The specification states "Each condition is repeated three times." It is unclear if the "three times" applies to the *entire workload* (i.e., run the same prompt 3 times with identical settings) or if the runner should automatically iterate through all workloads 3 times.
+**Resolution for Design**: Assume the runner executes a single run per invocation. The "three times" requirement is handled by the *orchestrator/script* calling this runner three times with the same arguments. The runner itself is idempotent and stateless regarding previous runs, ensuring that a failure in run #2 does not corrupt the data structure for run #1 or #3.
+
+---
+
+# State Machine
+
+The lifecycle of a single benchmark run is modeled as follows:
+
+1.  **INIT**:
+    *   Parse args and config.
+    *   Resolve model alias to absolute path.
+    *   Validate model file exists.
+    *   Generate `run_id` based on Identity Tuple.
+    *   Create output directory.
+    *   Write `prompt.txt` and initial `meta.json` (partial).
+
+2.  **VALIDATE_ENV**:
+    *   Check if backend binary/driver is accessible.
+    *   Check if monitoring tool is available (set `monitor_available` flag).
+    *   *Failure*: If backend unavailable, transition to `FAIL_BACKEND`.
+
+3.  **LAUNCH**:
+    *   Start monitoring subprocess (if `monitor_available`).
+    *   Start `llama.cpp` subprocess with specified args.
+    *   Pipe `stdout`/`stderr` to log files.
+    *   Start global timeout timer.
+
+4.  **RUNNING**:
+    *   Wait for `llama.cpp` process to exit.
+    *   Monitor subprocess runs in background.
+    *   *Timeout*: If timer expires, kill both processes. Transition to `FAIL_TIMEOUT`.
+    *   *OOM/Crash*: If `llama.cpp` exits non-zero or is killed by signal, transition to `FAIL_MODEL`.
+
+5.  **POST_PROCESS**:
+    *   Stop monitoring subprocess.
+    *   Parse `stdout.log` for performance metrics (using regex).
+    *   Extract `response.txt` from `llama.cpp` output (delimited by standard markers or everything after the prompt).
+    *   *Parse Failure*: If metrics regex fails to match expected fields, transition to `FAIL_PARSE`.
+
+6.  **FINALIZE**:
+    *   Compute SHA256 of `prompt.txt` and `response.txt`.
+    *   Update `meta.json` with final status, timing, and hashes.
+    *   Atomically write final `meta.json`.
+    *   *Success*: Exit code 0.
+    *   *Failure*: Exit code 1 (with specific error code for type of failure).
+
+### Exception Handling
+*   **Malformed Output**: `llama.cpp` prints unexpected format. The parser must be defensive; if metrics are missing, the run is `FAIL_PARSE`, not ignored.
+*   **Monitor Failure**: If monitor subprocess dies, catch the exception, log warning, set `monitor_status: failed`, but continue to `POST_PROCESS` the model run.
+
+---
+
+# Auditable Design
+
+### Component Boundaries
+1.  **Runner CLI (Python)**: Orchestrates the state machine. Handles config parsing, process spawning, and file I/O. It does *not* contain complex parsing logic for `llama.cpp` internals to keep it maintainable.
+2.  **Parser Module (Python)**: Pure functions that take `stdout.log` content and return a dict of metrics. Uses regex. Unit-testable in isolation.
+3.  **Monitor Agent (Shell/Python)**: A separate lightweight process that polls system stats and writes to `monitor.log`. Decoupled so its failure doesn't kill the main runner.
+
+### Metadata Schema (`meta.json`)
+```json
+{
+  "run_id": "uuid-v4",
+  "timestamp_start": "ISO8601",
+  "timestamp_end": "ISO8601",
+  "status": "success|failed|timeout|parse_error",
+  "monitor_status": "success|unavailable|failed",
+  "config": {
+    "model_path": "/abs/path/to/model.gguf",
+    "model_alias": "llama-3-8b",
+    "backend": "cuda",
+    "hardware_label": "RTX4090",
+    "ctx_size": 4096,
+    "n_predict": 256,
+    "temperature": 0.7,
+    "n_threads": 1,
+    "gpu_layers": 35,
+    "llama_cpp_version": "b3500"
+  },
+  "identity_hash": "sha256_of_tuple",
+  "artifacts": {
+    "prompt_hash": "sha256",
+    "response_hash": "sha256",
+    "response_length_chars": 1234,
+    "response_length_tokens": 150
+  },
+  "metrics": {
+    "loaded_in_seconds": 2.5,
+    "tokens_per_second": 45.2,
+    "total_tokens_generated": 150,
+    "prompt_tokens_per_second": 120.5
+  }
+}
+```
+
+### Atomic Writes & Partial Files
+*   **Directory Creation**: Create a unique temp directory for the run. Move it to the final `results/<run_id>` path only after successful completion. If the runner crashes mid-run, the temp dir remains (or is cleaned up by OS), preventing partial data from appearing as a "valid" run.
+*   **JSON Writes**: Write to `meta.json.tmp`, then `os.replace()` to `meta.json`. This ensures `meta.json` is never truncated or corrupt.
+*   **Raw Output**: `stdout.log` and `stderr.log` are appended to continuously. They are inherently safe from corruption on crash.
+
+### Preserving Context
+*   **Prompt**: The exact prompt string is written to `prompt.txt` at the start of the run. This file is included in the identity hash calculation.
+*   **Stdout/Stderr**: Captured fully. If `llama.cpp` prints debug info or warnings, they are preserved for manual audit.
+
+---
+
+# Analysis Integrity
+
+### Preventing Misleading Throughput Comparisons
+1.  **Variable Token Counts**: The specification sets `n_predict=256`, but the model may stop early (EOS token). Throughput (tokens/sec) is only comparable if the *number of generated tokens* is similar.
+    *   *Mitigation*: The `meta.json` records `total_tokens_generated`. Analysis scripts must filter or normalize. For strict comparison, runs where `total_tokens_generated` deviates >10% from the median of the 3 repetitions should be flagged.
+2.  **Failed Runs**: A run with `status: failed` must **never** contribute to average throughput. The design separates `status` from `metrics`. If `status != success`, metrics are ignored.
+3.  **Warm-up**: The first run often includes GPU kernel compilation or model loading. The design records `loaded_in_seconds`. If `loaded_in_seconds` is high, it may skew total time. The parser extracts `tokens_per_second` specifically for the *generation* phase, excluding load time, as provided by `llama.cpp`'s standard output.
+
+### Parser Robustness
+*   **Unknown Formats**: `llama.cpp` output format may change between builds.
+    *   *Strategy*: The parser uses optional regex groups. If a metric (e.g., `prompt_eval_time`) is missing, it is set to `null` in `metrics.json`, and the run is **not** failed (unless it's a critical metric like `total_tokens`).
+    *   *Strict Mode*: For the primary benchmark metric (`tokens_per_second`), if the regex fails to find a value, the run is marked `FAIL_PARSE`. This prevents silent zero-values or garbage data from skewing averages.
+*   **Defensive Parsing**: Never assume line order. Scan the entire `stdout.log` for metric lines.
+
+---
+
+# Test Plan
+
+### 1. Simulated Backend Failure
+*   **Setup**: Point `model_path` to a non-existent file or mock `llama.cpp` to exit code 1 immediately.
+*   **Expectation**: Runner transitions to `FAIL_MODEL`. `meta.json` status is `failed`. `metrics.json` is empty or null. `stdout.log` contains the error. No crash in runner.
+
+### 2. Missing Monitor
+*   **Setup**: Ensure `nvtop` or `htop` is not in `$PATH`. Run a valid model.
+*   **Expectation**: `meta.json` status is `success`. `monitor_status` is `unavailable`. `monitor.log` is empty or missing. Benchmark metrics are parsed correctly.
+
+### 3. Prompt with Spaces/Newlines
+*   **Setup**: Use a workload prompt with `\n\n` and special chars.
+*   **Expectation**: `prompt.txt` contains exact bytes. `identity_hash` changes if prompt changes. `llama.cpp` receives the prompt correctly (verified by checking `response.txt` starts with expected generation, not prompt echo errors).
+
+### 4. Partial Output (Crash mid-generation)
+*   **Setup**: Mock `llama.cpp` to write 10 tokens to stdout, then send `SIGKILL`.
+*   **Expectation**: Runner catches signal. Status `failed` (or `timeout` if killed by runner). `response.txt` contains partial text. `metrics.json` is invalid/missing. Artifacts preserved for debugging.
+
+### 5. Changed Prompt Hash
+*   **Setup**: Run same model/backend. Change one character in the prompt.
+*   **Expectation**: New `run_id` is generated. `identity_hash` in `meta.json` differs from previous run. No collision in file paths.
+
+### 6. Malformed Performance Output
+*   **Setup**: Mock `llama.cpp` to exit 0 but print no metric lines (or garbage text).
+*   **Expectation**: Parser fails to find `tokens_per_second`. Run status becomes `FAIL_PARSE`. `metrics.json` is not written or is marked invalid. Runner exits non-zero.
+
+---
+
+# Pre-merge Review
+
+### Risk 1: Regex Fragility on `llama.cpp` Output
+*   **Flaw**: `llama.cpp` frequently changes its console output format (e.g., adding "eval time" vs "prompt eval time"). A brittle regex will cause mass `FAIL_PARSE` on new builds.
+*   **Fix**: Implement a version-check step. Parse `llama.cpp --help` or version string. Maintain a mapping of version ranges to regex patterns. If version is unknown, default to a permissive regex and log a warning, rather than failing hard.
+
+### Risk 2: Race Condition in File Finalization
+*   **Flaw**: If the runner crashes between writing `response.txt` and updating `meta.json`, an auditor might see a response without metadata, or vice versa.
+*   **Fix**: Use the "atomic move" pattern. Write all artifacts to a temporary directory `results/temp_<uuid>/`. Only after all files are written and `meta.json` is finalized, rename the directory to `results/<run_id>`. This ensures any given `results/<run_id>` directory is always in a consistent, complete state.
+
+### Risk 3: Resource Leak in Long-Running Runs
+*   **Flaw**: If `llama.cpp` hangs (infinite loop in generation due to bad prompt or model bug), the runner waits indefinitely unless a global timeout is enforced.
+*   **Fix**: Enforce a hard `max_runtime` (e.g., 600 seconds) using `signal.alarm` (Unix) or `asyncio.wait_for` (Python). The timeout handler must kill the entire process group (including the monitor), not just the main thread, to ensure no zombie processes remain.
+
+[ Prompt: 208.4 t/s | Generation: 4.5 t/s ]
+
+
+Exiting...

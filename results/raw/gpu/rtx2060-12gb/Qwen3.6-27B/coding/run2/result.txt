@@ -1,0 +1,255 @@
+Input prompt
+
+You are reviewing production-quality Python for an inference benchmark. Implement the function below in Python using only the standard library.
+
+Task:
+Implement `summarize_decode_speeds(lines)` where `lines` is an iterable of strings. Return a dictionary with exactly these keys:
+
+* `count`: number of valid decode records
+* `min_tps`: minimum valid tps, or `None` when there are no valid records
+* `max_tps`: maximum valid tps, or `None` when there are no valid records
+* `avg_tps`: arithmetic mean rounded to three decimal places, or `None` when there are no valid records
+
+A record is valid only when, after splitting on whitespace, it contains both `event=decode` and a `tps=<value>` field. `<value>` must be a finite, strictly positive decimal accepted by Python's `float`; surrounding whitespace is already removed by tokenization. Ignore malformed lines, non-decode events, duplicate keys with conflicting values, non-finite values (`nan`, `inf`, `-inf`), zero, and negative values. Treat a duplicate `tps` key with the same value as malformed too. Do not crash if `lines` contains a non-string item; ignore that item.
+
+Response requirements:
+1. Provide a complete runnable implementation, including imports and a small `if __name__ == "__main__":` demonstration.
+2. Use a one-pass algorithm with O(1) extra space (excluding the input iterable).
+3. Explain why naive substring matching can accept the wrong event or a malformed duplicate, and explain the empty-result policy.
+4. Include at least eight demonstration lines covering a valid record, another key=value field, a non-decode event, a malformed float, `nan`, a duplicate key, a non-string item, and a valid record whose tps requires rounding.
+5. State the expected summary for your demonstration and include two focused assertions that would catch common incorrect implementations.
+
+Final model response
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b10110-8f5ab832c
+model      : /home/dilusha/llm-research/models/Qwen/Qwen3.6-27B-GGUF/Qwen3.6-27B-Q4_K_M.gguf
+ftype      : Q4_K - Medium
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> You are reviewing production-quality Python for an inference benchmark. Implement the function below in Python using only the standard library.
+
+Task:
+Implement `summarize_decode_speeds(lines)` where `lines` is an iterable of strings. Return a dictionary with exactly these keys:
+
+* `count`: number of valid decode records
+* `min_tps`: minimum valid tps, or `None` when there are no valid records
+* `max_tps`: maximum valid tps, or `None` when there are no valid records
+* `avg_tps`: arithmetic mean  ... (truncated)
+```python
+"""
+Summarize decode speeds from log lines.
+
+Naive substring matching pitfalls:
+  - Checking `"event=decode" in line` can match substrings like
+    `"some_event=decode_extra"` or `"event=decoding"`, accepting
+    non-decode records. Proper tokenization and exact token equality
+    avoid this.
+  - Checking `"tps=" in line` can match `"atps=5"` or `"bps=5"`, or
+    accept a line that has two `tps=` tokens with different values.
+    By collecting all `tps=` tokens in a single pass and rejecting
+    duplicates (even if identical), we enforce exactly one valid tps
+    per record.
+
+Empty-result policy:
+  When no valid records are found, `min_tps`, `max_tps`, and `avg_tps`
+  are all `None`. This avoids division-by-zero and gives callers a
+  clear signal that no data was available, rather than returning
+  misleading numeric defaults like 0 or NaN.
+"""
+
+from __future__ import annotations
+
+import math
+from typing import Any, Iterable
+
+
+def summarize_decode_speeds(lines: Iterable[Any]) -> dict:
+    """
+    One-pass summary of decode TPS values.
+
+    Parameters
+    ----------
+    lines : iterable of items
+        Each item is expected to be a string log line. Non-string items
+        are silently ignored.
+
+    Returns
+    -------
+    dict with keys count, min_tps, max_tps, avg_tps
+    """
+    count: int = 0
+    min_tps: float | None = None
+    max_tps: float | None = None
+    total_tps: float = 0.0
+
+    for item in lines:
+        # Guard against non-string items
+        if not isinstance(item, str):
+            continue
+
+        # Tokenize on whitespace
+        tokens = item.split()
+
+        # Quick reject: need at least two tokens for both fields
+        if len(tokens) < 2:
+            continue
+
+        # Check for event=decode token (exact match)
+        has_decode = False
+        tps_values: list[float] = []
+        has_duplicate_tps = False
+
+        for token in tokens:
+            if token == "event=decode":
+                has_decode = True
+            elif token.startswith("tps="):
+                # Extract value after "tps="
+                val_str = token[4:]
+                # Try to parse as float
+                try:
+                    val = float(val_str)
+                except (ValueError, OverflowError):
+                    # Malformed float -> malformed line
+                    has_duplicate_tps = True  # treat as invalid
+                    break
+
+                # Check for finite, strictly positive
+                if not math.isfinite(val) or val <= 0:
+                    # non-finite, zero, or negative -> malformed
+                    has_duplicate_tps = True
+                    break
+
+                tps_values.append(val)
+
+        # If we broke out due to malformed value, skip
+        if has_duplicate_tps:
+            continue
+
+        # Must have event=decode
+        if not has_decode:
+            continue
+
+        # Must have exactly one tps= token (duplicates are malformed,
+        # even if identical)
+        if len(tps_values) != 1:
+            continue
+
+        tps = tps_values[0]
+
+        # Update running statistics
+        count += 1
+        total_tps += tps
+
+        if min_tps is None or tps < min_tps:
+            min_tps = tps
+        if max_tps is None or tps > max_tps:
+            max_tps = tps
+
+    # Compute average if we have records
+    if count > 0:
+        avg_tps = round(total_tps / count, 3)
+    else:
+        avg_tps = None
+
+    return {
+        "count": count,
+        "min_tps": min_tps,
+        "max_tps": max_tps,
+        "avg_tps": avg_tps,
+    }
+
+
+if __name__ == "__main__":
+    # Demonstration lines covering various cases:
+    demo_lines = [
+        # 1. Valid record
+        "event=decode tps=10.5",
+        # 2. Valid record with another key=value field
+        "event=decode batch_size=32 tps=20.0",
+        # 3. Non-decode event (should be ignored)
+        "event=generate tps=15.0",
+        # 4. Malformed float (should be ignored)
+        "event=decode tps=abc",
+        # 5. nan value (should be ignored)
+        "event=decode tps=nan",
+        # 6. Duplicate tps key with different values (should be ignored)
+        "event=decode tps=5.0 tps=10.0",
+        # 7. Non-string item (should be ignored)
+        42,
+        # 8. Valid record whose tps requires rounding (1/3 rounds to 0.333)
+        "event=decode tps=0.3333",
+    ]
+
+    result = summarize_decode_speeds(demo_lines)
+
+    print("Summary:", result)
+
+    # Expected:
+    # Valid records:
+    #   line 0: tps=10.5
+    #   line 1: tps=20.0
+    #   line 7: tps=0.3333
+    # count = 3
+    # min_tps = 0.3333
+    # max_tps = 20.0
+    # avg_tps = (10.5 + 20.0 + 0.3333) / 3 = 30.8333 / 3 = 10.277766... -> round to 3 decimals = 10.278
+
+    # Focused assertions that catch common incorrect implementations:
+    # 1. Ensure non-decode events are excluded (count should be 3, not 4)
+    assert result["count"] == 3, f"Expected count 3, got {result['count']}"
+
+    # 2. Ensure rounding is correct (avg should be 10.278, not truncated or unrounded)
+    assert result["avg_tps"] == 10.278, f"Expected avg_tps 10.278, got {result['avg_tps']}"
+
+    # Additional sanity checks
+    assert result["min_tps"] == 0.3333, f"Expected min_tps 0.3333, got {result['min_tps']}"
+    assert result["max_tps"] == 20.0, f"Expected max_tps 20.0, got {result['max_tps']}"
+
+    # Test empty input
+    empty_result = summarize_decode_speeds([])
+    assert empty_result == {
+        "count": 0,
+        "min_tps": None,
+        "max_tps": None,
+        "avg_tps": None,
+    }, f"Empty result mismatch: {empty_result}"
+
+    # Test with only invalid lines
+    invalid_only = [
+        "event=generate tps=5.0",
+        "event=decode tps=nan",
+        "event=decode tps=0",
+        "event=decode tps=-1.0",
+        "tps=5.0",  # no event=decode
+        "event=decode",  # no tps
+        123,  # non-string
+    ]
+    invalid_result = summarize_decode_speeds(invalid_only)
+    assert invalid_result == {
+        "count": 0,
+        "min_tps": None,
+        "max_tps": None,
+        "avg_tps": None,
+    }, f"Invalid-only result mismatch: {invalid_result}"
+
+    print("All assertions passed.")
+```

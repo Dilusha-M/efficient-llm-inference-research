@@ -1,0 +1,106 @@
+Input prompt
+
+Answer all 30 questions using only your existing knowledge. Do not browse or use tools.
+
+Output exactly one line per question in this format:
+01. answer
+02. answer
+
+Keep the question number, answer every question, and provide only the shortest correct answer. Do not add explanations, confidence statements, headings, bullets, or extra lines. For a person, give the commonly used full name; for a place, give the commonly used English name; for a year or unit, give the standard form.
+
+01. What is the capital city of Australia?
+02. What chemical symbol represents sodium?
+03. Which planet is known as the Red Planet?
+04. What is the largest ocean on Earth?
+05. What language is the main official language of Brazil?
+06. What organ pumps blood through the human body?
+07. What is the SI unit of electric current?
+08. What gas makes up the largest share of Earth's atmosphere?
+09. What is the name of the process by which green plants use light to make sugars?
+10. What is the name of Earth's natural satellite?
+11. What is the capital city of Mongolia?
+12. Which strait separates Spain from Morocco?
+13. Who wrote the novel Pride and Prejudice?
+14. What is the chemical symbol for gold?
+15. Which treaty formally ended World War I between Germany and the Allied Powers?
+16. What is the traditional name for the shape of a DNA molecule?
+17. Which country contains the archaeological site of Machu Picchu?
+18. What is the SI unit of frequency?
+19. Which canal connects the Mediterranean Sea to the Red Sea?
+20. Who wrote the ancient Greek epic traditionally called the Odyssey?
+21. What is the largest species of mammal?
+22. Which country is home to the Great Pyramid of Giza?
+23. What is the hardest naturally occurring mineral on the Mohs scale?
+24. Which planet is closest to the Sun?
+25. What is the largest desert in the world by area?
+26. Who was the first woman to receive a Nobel Prize?
+27. Which philosopher wrote The Republic?
+28. What year was the Magna Carta originally sealed?
+29. What is the approximate acceleration due to gravity at Earth's surface, in metres per second squared?
+30. What imaginary line is defined as 0 degrees longitude?
+
+Final model response
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b10110-8f5ab832c
+model      : /home/dilusha/llm-research/models/Qwen/Qwen3.6-27B-GGUF/Qwen3.6-27B-Q4_K_M.gguf
+ftype      : Q4_K - Medium
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> Answer all 30 questions using only your existing knowledge. Do not browse or use tools.
+
+Output exactly one line per question in this format:
+01. answer
+02. answer
+
+Keep the question number, answer every question, and provide only the shortest correct answer. Do not add explanations, confidence statements, headings, bullets, or extra lines. For a person, give the commonly used full name; for a place, give the commonly used English name; for a year or unit, give the standard form.
+
+01. What is th ... (truncated)
+01. Canberra
+02. Na
+03. Mars
+04. Pacific Ocean
+05. Portuguese
+06. Heart
+07. Ampere
+08. Nitrogen
+09. Photosynthesis
+10. The Moon
+11. Ulaanbaatar
+12. Strait of Gibraltar
+13. Jane Austen
+14. Au
+15. Treaty of Versailles
+16. Double helix
+17. Peru
+18. Hertz
+19. Suez Canal
+20. Homer
+21. Blue whale
+22. Egypt
+23. Diamond
+24. Mercury
+25. Antarctic Desert
+26. Marie Curie
+27. Plato
+28. 1215
+29. 9.8
+30. Prime Meridian
