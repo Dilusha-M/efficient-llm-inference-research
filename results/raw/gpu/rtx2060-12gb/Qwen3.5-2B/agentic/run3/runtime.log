@@ -1,0 +1,196 @@
+
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b10110-8f5ab832c
+model      : /home/dilusha/llm-research/models/Qwen/Qwen3.5-2B-GGUF/Qwen3.5-2B-Q4_K_M.gguf
+ftype      : Q4_K - Medium
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> You are simulating a senior coding-agent design review without external tools, internet access, shell commands, package installation, or file-system inspection. Work only from the specification and artifacts below. Be concrete enough that another engineer could implement and test the design.
+
+Project:
+A research project needs a command-line llama.cpp benchmark runner supporting CPU, CUDA, and Vulkan; model aliases from a configuration file; fixed workload prompts; performance output; hardware me ... (truncated)
+# Project: Llama.cpp Benchmark Runner
+
+## 1. Requirements and Invariants
+
+### Inputs
+*   **Configuration File (`config.yaml`):** Defines default parameters (context size, generation limit, temperature, thread count) and model aliases. Allows explicit override of these parameters per run.
+*   **Hardware Metadata:** Hardware label (CPU/GPU/Vulkan), driver environment, GPU layers count, and specific backend selection.
+*   **Prompt:** A fixed workload prompt string (or a hash thereof).
+*   **Output Directory:** A directory path where the runner expects to write artifacts.
+
+### Artifacts
+*   **`run_id.txt`:** A unique identifier assigned to the run (e.g., UUID or timestamp).
+*   **`metrics.json`:** (Optional) Performance metrics (tokens/s, latency, memory usage).
+*   **`raw_output.txt`:** The exact stdout/stderr captured during execution.
+*   **`metadata.json`:** A JSON file containing:
+    *   `status`: "success", "failure", or "timeout".
+    *   `model_name`: The model identifier.
+    *   `backend`: The specific backend used.
+    *   `hardware`: The hardware label.
+    *   `prompt_hash`: A hash of the prompt used.
+    *   `generation_limit`: The limit set in config.
+    *   `tokens_generated`: The raw count of tokens generated.
+    *   *Note:* If `metrics.json` is not present or valid, the status defaults to "failure" regarding metrics, but the run is still considered "success" regarding the model execution.
+
+### Success vs. Failure States
+*   **Success:** The process completed within the timeout window, produced valid `raw_output.txt`, and `metadata.json` contains required fields.
+*   **Failure:**
+    *   The process killed/crashed before completion.
+    *   `raw_output.txt` cannot be read (file not found or empty).
+    *   `metadata.json` is missing or invalid.
+    *   The benchmark exit code is non-zero.
+    *   **Ambiguity Resolution:** A "failed model run" is strictly defined as the presence of `raw_output.txt` but a missing `metadata.json` OR `metadata.json` containing no `status` field that indicates a specific error state other than "success". If `metadata.json` exists and has `status: success`, the run is considered successful even if `metrics.json` is absent.
+
+### Experimental Identity Tuple
+To ensure the runner does not mix results, the "identity" of a run is composed of the tuple: `(model_name, backend, hardware_label, context_size, generation_limit, prompt_hash, temperature, build, driver_environment)`.
+*   **Invariant:** All components of this tuple must remain constant within a single run. The runner must fail (and log the specific component causing the mismatch) if any component changes.
+
+---
+
+## 2. State-Machine Workflow
+
+The runner operates as a finite state machine (FSM) with the following transitions:
+
+1.  **START:** Initialization phase. Validates configuration file existence.
+    *   *Action:* Read `config.yaml`. If missing, print error and exit.
+2.  **VALIDATE:** Parse `config.yaml` and `hardware_metadata`.
+    *   *Action:* Construct the **Experimental Identity Tuple**.
+    *   *Decision:* If tuple components change from the previous run, log a "Configuration Drift" event and abort (do not mix results).
+3.  **PREPARE:** Set up the working directory and temporary files.
+    *   *Action:* Create `run_id.txt`, `raw_output.txt` (write-once, truncate if exists), and `metrics.json` (write-once, empty).
+4.  **LAUNCH:** Construct the `llama.cpp` subprocess.
+    *   *Action:* Launch with the specific prompt, model file, backend, and hardware label.
+    *   *Decision:* If the process cannot start, transition to `FAILURE_START`.
+5.  **MONITOR:** Continuous polling of the child process.
+    *   *Action:* Check for termination signals (SIGTERM, SIGKILL), timeout (default 300s), or OOM (Out Of Memory).
+    *   *Decision:* If process exits, check return code.
+6.  **POST-PROCESSING:**
+    *   *Scenario A - Normal Exit:* Read `raw_output.txt`. If empty, transition to `FAILURE_FINAL`. If non-empty, read `metrics.json`. If missing/invalid, transition to `FAILURE_FINAL`.
+    *   *Scenario B - Timeout/OOM:* Log reason in `metadata.json`. Transition to `FAILURE_FINAL`.
+    *   *Scenario C - Partial Output:* If `raw_output.txt` is non-empty but `metrics.json` is missing, transition to `FAILURE_FINAL` (due to missing metrics).
+7.  **FINALIZE:**
+    *   *Action:* If status is `FAILURE`, append a specific error marker to the end of `raw_output.txt` to preserve auditability.
+    *   *Action:* Write final `metadata.json`.
+
+**Exit Conditions:**
+*   `SUCCESS`: All checks passed.
+*   `FAILURE`: Process died, crashed, or produced no valid metrics.
+
+---
+
+## 3. Auditable Design
+
+### Component Boundaries
+*   **Validation Module (`config_validator.py`):** Handles `config.yaml` parsing. Validates the existence of the identity tuple components.
+*   **Launcher Module (`runner_launcher.py`):** Handles subprocess creation, arguments construction, and initial logging.
+*   **Monitor Module (`runner_monitor.py`):** Handles polling, signal handling, timeout logic, and OOM detection.
+*   **Post-Processing Module (`runner_postprocess.py`):** Reads `raw_output.txt`, attempts to parse `metrics.json`, and decides the final status.
+
+### Metadata Schema
+The `metadata.json` file must follow this strict schema to ensure integrity:
+```json
+{
+  "run_id": "uuid",
+  "status": "success" | "failure",
+  "model_name": "string",
+  "backend": "string",
+  "hardware": "string",
+  "prompt_hash": "hash",
+  "generation_limit": 256,
+  "tokens_generated": 12345,
+  "stderr_log": "string"
+}
+```
+*   **Atomic-Write Conventions:** All JSON files (`run_id.txt`, `metrics.json`, `metadata.json`) are written using `json.dump` with `sort_keys=True` and consistent indentation. This ensures that if a key is added or removed, the file is self-documenting.
+*   **Partial File Handling:** `raw_output.txt` is written using `raw.write()` without truncation. If the process crashes, the file remains complete, allowing a human to see exactly what the program outputted before failing.
+
+### Preservation of Stream Data
+*   **Stdout/Stderr:** The `raw_output.txt` file captures the *entire* stdout and stderr streams of the child process.
+*   **Prompt Preservation:** The prompt used for the benchmark is recorded in `metadata.json` as a string. This allows the auditor to reproduce the exact run by feeding this prompt into the benchmark again.
+
+---
+
+## 4. Analysis Integrity
+
+### Preventing Misleading Throughput Comparisons
+To prevent a failed run or variable generated-token count from misleading a throughput comparison (e.g., `tokens/s`):
+1.  **Sanity Check on Tokens:** The runner must strictly enforce that `tokens_generated` must be an integer > 0. If it is 0 or negative, the run is treated as a failure (even if `raw_output.txt` exists), because 0 tokens/s is not a valid throughput metric.
+2.  **Context Lock:** The `tokens_generated` count is derived from the final `generation_limit` (256) * (temperature 0.7 * context_size 4096) * (threads 1). The runner logs this calculated expectation in `metadata.json`. If the actual tokens generated deviates significantly from this expectation (e.g., due to early OOM or crash), the status is marked `failure` rather than just low throughput.
+3.  **No Mixed Results:** By enforcing the "Experimental Identity Tuple" invariants, the runner ensures that the `tokens_generated` count in `metadata.json` belongs to the specific run with the specific hardware. It does not mix the count from a run with `context_size=8192` with a run with `context_size=4096`.
+
+### Handling Unknown Llama.cpp Output Formats
+The parser in `runner_postprocess.py` is designed to be robust against format variations (e.g., specific JSON keys, different line-ending styles):
+*   **Graceful Degradation:** If `metrics.json` is present but `tokens_generated` cannot be parsed (e.g., due to a non-standard format), the parser defaults to `tokens_generated = 0`.
+*   **Fallback to Raw Count:** As a safety net, the runner can also check the size of `raw_output.txt` in bytes. If the file size is non-zero, the runner assumes some data was written and attempts a heuristic parsing or logs a "metric_unavailable" warning.
+*   **Parsing Strategy:** The parser treats the output as a stream of tokens. It attempts to read the `metrics.json` file. If it fails to parse the JSON, it logs a warning but does not crash the pipeline; it simply reports `tokens_generated = 0` to ensure the benchmark runner never produces a false positive for high throughput when the model actually crashed.
+
+---
+
+## 5. Test Plan
+
+1.  **Simulated Backend Failure:**
+    *   *Setup:* Launch the runner with a dummy model file that points to a non-existent file.
+    *   *Expectation:* The runner should detect the missing file, log the error in `metadata.json`, set status to "failure", and write `raw_output.txt` containing the error message.
+
+2.  **Missing Monitor Data:**
+    *   *Setup:* Start the runner, wait for a short duration (e.g., 10s), then kill the process manually (killing it before it finishes).
+    *   *Expectation:* `raw_output.txt` should contain the final output of the process. `metrics.json` should be present (as it was written during the short run) but contain no `metrics` key (or a `metrics` object with no `tokens_generated`), resulting in a "success" status but missing metrics data.
+
+3.  **Prompt Containing Spaces/Newlines:**
+    *   *Setup:* Use the `chat` workload prompt with spaces and newlines.
+    *   *Expectation:* The runner must handle the prompt string correctly without crashing. The `prompt_hash` in `metadata.json` must be calculated correctly to ensure identity integrity.
+
+4.  **Partial Output:**
+    *   *Setup:* Start the runner, wait for a long duration (e.g., 300s), then kill the process via `SIGTERM`.
+    *   *Expectation:* `raw_output.txt` should contain the output of the running process (up to the point of termination). The status should be "failure".
+
+5.  **Changed Prompt Hash:**
+    *   *Setup:* Run the benchmark twice. On the second run, explicitly set the context size to 8192 and temperature to 1.0 in `config.yaml`.
+    *   *Expectation:* The runner must detect this drift. It should log the configuration drift, abort the comparison, and prevent the "tokens/s" metrics of the first run from appearing in the second run's `metadata.json` (or log a specific "configuration mismatch" entry in the first run's `metadata.json` to prevent mixing).
+
+6.  **Missing Monitor Data (Final):**
+    *   *Setup:* Start the runner, wait 10s, then kill the process.
+    *   *Expectation:* `raw_output.txt` should be non-empty. `metadata.json` should exist but lack a `metrics` key. The status is "success" (model ran successfully, just no metrics). This distinguishes a "run that didn't finish" from a "run that failed".
+
+---
+
+## 6. Pre-Merge Review
+
+The following three design flaws are identified as critical risks:
+
+1.  **Flaw A: The "Zero Token" Misinterpretation.**
+    *   *Issue:* If a model crashes after generating 0 tokens, the current logic might treat a failed run as a success if the process exited cleanly, or vice versa depending on the exact parsing of `metrics.json`.
+    *   *Fix:* Explicitly enforce that `tokens_generated` must be an integer > 0 for the status to be classified as "success". If the process generates 0 tokens, the status defaults to "failure" with a clear reason in the `stderr_log` field.
+
+2.  **Flaw B: Identity Tuple Ambiguity in Drift Detection.**
+    *   *Issue:* The specification mentions distinguishing a "failed model run" from "missing optional monitoring data." However, if a model runs successfully but produces no metrics (e.g., GPU monitoring driver not present), the runner currently treats this as a failure because `metrics.json` is missing. This conflates "no monitoring data" with "model failure".
+    *   *Fix:* Explicitly add a `has_metrics` boolean flag to `metadata.json`. If `has_metrics` is false but `status` is "success", the runner should log a specific "No metrics collected" warning instead of marking the run as a failure.
+
+3.  **Flaw C: Partial Output Corruption Risk.**
+    *   *Issue:* The design relies on `raw_output.txt` to determine success/failure. If the process crashes mid-generation, the file might contain garbage or truncated data that looks like valid output.
+    *   *Fix:* Implement a strict heuristic in the parser: If `tokens_generated` is 0, the file *must* be completely empty. If the file has content but `tokens_generated` is 0, it is considered a "failure" (file not empty due to crash). This prevents the runner from misinterpreting a crashed process as having outputted 100 tokens/s.
+
+[ Prompt: 3017.9 t/s | Generation: 153.0 t/s ]
+
+
+Exiting...

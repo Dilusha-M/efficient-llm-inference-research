@@ -1,0 +1,221 @@
+
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b10110-8f5ab832c
+model      : /home/dilusha/llm-research/models/Qwen/Qwen3.5-2B-GGUF/Qwen3.5-2B-Q4_K_M.gguf
+ftype      : Q4_K - Medium
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> You are simulating a senior coding-agent design review without external tools, internet access, shell commands, package installation, or file-system inspection. Work only from the specification and artifacts below. Be concrete enough that another engineer could implement and test the design.
+
+Project:
+A research project needs a command-line llama.cpp benchmark runner supporting CPU, CUDA, and Vulkan; model aliases from a configuration file; fixed workload prompts; performance output; hardware me ... (truncated)
+# Command-Llama Benchmark Runner: Design Specification
+
+## 1. Requirements and Invariants
+
+### Inputs
+*   **Configuration File (`benchmark.yaml` or `config.json`):** Defines model aliases, backend (CPU/GPU/Vulkan), hardware label (e.g., `nvidia-a100`, `amd-sapphire`), context size, generation limit, temperature, and thread count.
+*   **Workload Spec:** Selects from `chat`, `batch`, `coding`, `summarization`, `agentic`, or `world_knowledge`.
+*   **Prompt Hash:** The exact prompt string used by the workload (stored in metadata).
+*   **Environment Flags:** Build version, driver version, CUDA/cuDNN versions.
+
+### Artifacts
+*   **`run_id.json` (Primary Artifact):** A single JSON object containing the unique identifier for this run (derived from prompt hash + time + seed). This is the "identity tuple" that must be preserved.
+*   **`stdout/stderr` (Raw Output):** The exact text captured from the terminal of the benchmark process.
+*   **`metrics.json` (Optional):** Contains sampled metrics (latency, throughput, VRAM usage) *only if* monitoring is active.
+*   **`final_result.json`:** The aggregated summary containing final throughput and a pass/fail status.
+
+### Success/Failure States
+*   **Success:** The process exits cleanly with a non-zero exit status indicating a successful completion (e.g., `exit_code=0`). `metrics.json` is populated. `stdout` is readable.
+*   **Failure:**
+    *   **Runtime Error:** Process exits with `exit_code != 0` and no valid `metrics.json`.
+    *   **Timeout:** Process runs past the configured duration.
+    *   **Malformed Output:** The JSON structure of `metrics.json` is invalid (e.g., missing required keys, unparseable values).
+
+### Experimental Identity Tuple
+The system requires an immutable hash of the run to ensure isolation. The tuple is:
+`({model_alias, backend, hardware, build, driver, context, limit, temp, worker_threads}, prompt_hash)`
+
+**Ambiguity to Resolve:**
+*   **Ambiguity:** Should the "Workload" itself be considered part of the identity tuple?
+    *   *Resolution:* **No.** The identity tuple represents the hardware/software state. The workload is an external driver. If a valid run uses a different workload but identical hardware/params, it should be a separate run with a new `run_id.json` (or a tagged `run_id`), ensuring that comparing throughput across different workloads is not conflated with comparing them across different hardware.
+
+---
+
+## 2. State-Machine Workflow
+
+The runner executes the following lifecycle stages. A transition to a failure state is triggered by specific conditions.
+
+1.  **Validation Phase:**
+    *   Read config. Validate that required fields (model_alias, backend) exist.
+    *   Verify the configuration is **not** mixed with previous runs (check `run_id.json` for a matching key).
+    *   *Failure:* If a matching key is found, abort with "Duplicate Identity Detected".
+
+2.  **Initialization Phase:**
+    *   Initialize a process manager (Linux `Popen` or `subprocess`).
+    *   Capture `stdout` and `stderr` streams into memory.
+    *   Capture the raw prompt string.
+    *   *Failure:* If capture fails or prompt is missing, abort.
+
+3.  **Launch Phase:**
+    *   Spawn the benchmark process.
+    *   **Conditional Monitoring:**
+        *   If `monitoring_enabled` is `true` and hardware support is confirmed, start the monitoring agent.
+        *   *Failure:* If monitoring is requested but hardware doesn't support it, emit a "Monitoring Not Supported" warning and proceed without metrics.
+    *   Send the prompt to the process.
+    *   Record `start_timestamp`.
+
+4.  **Monitoring Phase (Active):**
+    *   Poll interval.
+    *   Parse performance output (JSON format).
+    *   Aggregate metrics (latency, throughput).
+    *   **Failure:** If the parsing fails (malformed JSON) or the process crashes *during* this phase, transition to "Process Failed".
+
+5.  **Process Exit Handling:**
+    *   If process exits:
+        *   *Code == 0:* Extract final metrics. If metrics are valid, transition to "Success".
+        *   *Code != 0:* Transition to "Failure" (unless it's a transient signal during sampling, in which case log the error).
+    *   **Timeout:** If `start_timestamp` + timeout > `end_timestamp`, transition to "Timeout Failure".
+
+6.  **Finalization Phase:**
+    *   If successful:
+        *   Write `run_id.json` to disk.
+        *   Write `metrics.json` to disk.
+        *   Write `final_result.json` to disk.
+        *   Output the summary to console.
+    *   If failed:
+        *   Write `run_id.json` to disk (even if it's a failure, so the run is recorded).
+        *   Write `final_result.json` (containing failure reason) to disk.
+        *   Output a failure summary to console.
+
+---
+
+## 3. Auditable Design
+
+### Component Boundaries
+*   **Core Logic (Python):** Manages the state machine, configuration parsing, identity generation, and basic process spawning.
+*   **Benchmark Executor (C/C++ Wrapper):** Manages the actual `llama.cpp` invocation, handling the specific command-line flags for the workload, and reading raw outputs. *Note: The benchmark logic is compiled to static C++ to ensure determinism and avoid runtime overhead.*
+*   **Monitor Agent (Python):** A lightweight wrapper that periodically checks the main process's memory usage or CPU usage. It does *not* parse the benchmark's output; it only acts if the benchmark outputs a specific "status" field indicating it is ready for sampling.
+*   **Post-Processing (Python):** Parses the raw `stdout` to extract the final JSON structure. It is designed to be robust against malformed JSON (e.g., using a try/except block around JSON decoding).
+
+### Metadata Schema (`run_id.json`)
+```json
+{
+  "run_id": "uuid-v1-{prompt_hash}-{timestamp}",
+  "model_alias": "...",
+  "backend": "...",
+  "hardware": "...",
+  "context": 4096,
+  "limit": 256,
+  "temperature": 0.7,
+  "threads": 1,
+  "workload": "chat",
+  "start_time": 0.0,
+  "end_time": 0.0,
+  "is_valid": true
+}
+```
+
+### Atomic-Write / Partial-File Conventions
+*   **`run_id.json`:** Uses atomic writes (`touch` with a temp file then rename, or `json` module's `dump` to a temp file followed by atomic rename). This ensures the file is either completely present or completely absent on disk, guaranteeing the identity is never partially corrupted.
+*   **`metrics.json`:** If the benchmark process crashes while writing metrics, the file remains empty or incomplete. The Post-Processing step reads the file; if the read fails (EOF) or the structure is invalid, it treats this as a "Malformed Output" failure state rather than a silent crash.
+
+### Preservation of Streams
+*   **Raw Output:** Captured in a buffer (`stdout_buffer`) immediately upon process creation. This buffer is used by the Post-Processing step to reconstruct the exact prompt and raw output, regardless of whether the final `metrics.json` was successfully parsed.
+*   **Stdout/Stderr:** Redirected to files named `run_stdout.txt` and `run_stderr.txt`. These files are not deleted; they are appended to the repository's history of raw logs for manual audit.
+
+---
+
+## 4. Analysis Integrity
+
+### Preventing Misleading Throughput Comparison
+To prevent a failed run or a variable generated-token count from skewing the comparison:
+1.  **Strict Identity Enforcement:** The `run_id.json` is the only key in the repository identifying a run. If a run fails (e.g., `exit_code != 0`), the `run_id.json` is still written, and the `final_result.json` explicitly marks the run as failed.
+2.  **Token Count Safety:** The parser validates that `metrics.json` contains a `generated_tokens` key. If the benchmark output is malformed or the token count is missing, the parser logs a warning but does not crash the runner. The runner prioritizes the existence of a valid identity (`run_id.json`) over a fully populated metrics file.
+3.  **No Variable Throughput in Failure State:** If the process crashes *after* metrics are generated (e.g., during sampling), the `metrics.json` will likely be missing or truncated. The post-processing step detects this, sets `is_valid_metrics` to `false`, and ensures the `final_result` does not include a derived `throughput` value in that case, preventing the calculation of a false positive from incomplete data.
+
+### Handling Unknown Llama.cpp Output Formats
+The Post-Processing function must implement a **Fail-Safe Parser**:
+*   **Graceful Degradation:** If the benchmark outputs a JSON object but lacks a specific key (e.g., `throughput`), the parser attempts to reconstruct a default structure or logs an error but proceeds to write the `run_id.json` and a `final_result.json` with `is_success: true` (or `false` if the process exit code was non-zero).
+*   **Format Agnosticism:** The parser is configured to accept standard JSON, and if the keys provided by the benchmark are non-standard, it attempts to map them to known schema fields (e.g., mapping `total_time` to `latency_ms`).
+*   **No Silent Drop:** If the parser cannot reliably determine the state of the run, it falls back to the raw process exit code and prompt to determine success/failure, ensuring that a "broken" run is never silently treated as a "success".
+
+---
+
+## 5. Test Plan
+
+### Test 1: Simulated Backend Failure
+*   **Scenario:** The benchmark process is launched with a mock `llama.cpp` backend that throws a `RuntimeError` during initialization.
+*   **Expected Behavior:**
+    *   `run_id.json` is written (identity preserved).
+    *   `metrics.json` is empty or malformed.
+    *   `final_result.json` has `is_success: false`.
+    *   Console output indicates the specific error from the backend.
+*   **Verification:** Check `run_id.json` exists but `metrics.json` is missing. Verify the process did not exit with `exit_code=0`.
+
+### Test 2: Missing Monitor
+*   **Scenario:** `monitoring_enabled` is set to `true` in the config, but the hardware label indicates no NVIDIA GPU.
+*   **Expected Behavior:**
+    *   `metrics.json` should *not* be generated.
+    *   `final_result.json` should contain valid metadata but no metrics.
+    *   The runner should log a warning: "Monitoring Not Supported".
+*   **Verification:** Confirm `metrics.json` is absent while `run_id.json` remains intact.
+
+### Test 3: Prompt Containing Spaces and Newlines
+*   **Scenario:** The benchmark is run with a prompt containing `"  \n\n"`.
+*   **Expected Behavior:**
+    *   The `prompt_hash` in `run_id.json` must differ from a run with a clean prompt.
+    *   The `final_result.json` must accurately reflect the failure status derived from the raw output.
+    *   The raw `run_stdout.txt` must contain the exact prompt.
+*   **Verification:** Run with a complex prompt. Verify the run ID changes (new hash) and that the raw output preserves the prompt content.
+
+### Test 4: Partial Output (Crash in Sampling)
+*   **Scenario:** The benchmark process is launched successfully, metrics are generated, but the process crashes *during* the sampling phase (e.g., due to an OOM kill).
+*   **Expected Behavior:**
+    *   `metrics.json` is present but contains invalid or truncated data (missing `generated_tokens` or `throughput`).
+    *   `final_result.json` marks the run as successful (based on the exit code, which was 0).
+    *   `run_id.json` is valid.
+*   **Verification:** Run the benchmark. Check that `run_id.json` is valid. Check `final_result.json` is valid. Check `metrics.json` has no `generated_tokens` (or is missing).
+
+### Test 5: Changed Prompt Hash (Identity Confusion)
+*   **Scenario:** A second run is launched with the exact same hardware, backend, and params, but with a different `model_alias` (e.g., `model-a` vs `model-b`).
+*   **Expected Behavior:**
+    *   `run_id.json` for the second run must have a **different** `prompt_hash` than the first run.
+    *   The runner must treat this as a distinct run and write a new `run_id.json`.
+*   **Verification:** Run the benchmark twice with different prompts on the same hardware. Verify two distinct `run_id.json` files exist in the repository.
+
+### Test 6: Timeout and Malformed Output
+*   **Scenario:**
+    1.  Launch a benchmark that runs longer than the timeout (causing a timeout failure).
+    2.  OR Launch a benchmark that crashes with a malformed JSON output.
+*   **Expected Behavior:**
+    *   The runner must handle both cases gracefully without crashing the entire pipeline.
+    *   `run_id.json` is written for both scenarios.
+    *   `final_result.json` reflects the failure state.
+*   **Verification:**
+    *   Run a timeout test. Verify `run_id.json` exists.
+    *   Run a malformed JSON test. Verify `metrics.json` is malformed, but the runner completes the workflow to write `run_id.json`.
+
+[ Prompt: 3001.8 t/s | Generation: 153.2 t/s ]
+
+
+Exiting...
