@@ -1,0 +1,168 @@
+Input prompt
+
+You are simulating a senior coding-agent design review without external tools, internet access, shell commands, package installation, or file-system inspection. Work only from the specification and artifacts below. Be concrete enough that another engineer could implement and test the design.
+
+Project:
+A research project needs a command-line llama.cpp benchmark runner supporting CPU, CUDA, and Vulkan; model aliases from a configuration file; fixed workload prompts; performance output; hardware metadata; resource monitoring; and one metadata file per run. Raw output must remain available for manual audit. The runner must distinguish a failed model run from missing optional monitoring data.
+
+Existing constraints:
+* Each condition is repeated three times and compared manually using each run's `response.txt`/raw response plus metrics.
+* The default context is 4096, generation limit 256, temperature 0.7, and CPU thread count 1; a workload may override context explicitly.
+* Workloads are `chat`, `batch`, `coding`, `summarization`, `agentic`, and `world_knowledge`.
+* The runner must not mix results if model file, backend, hardware label, context, generation limit, prompt, temperature, GPU layers, build, or driver environment changes.
+* Monitors may be unavailable or sampled sparsely. A model process may fail after creating partial output.
+
+Required deliverables:
+1. Requirements and invariants: list inputs, artifacts, success/failure states, and the experimental identity tuple. Identify at least one ambiguity that must be resolved before implementation.
+2. State-machine workflow: describe the lifecycle from validation through launch, monitoring, process exit, and finalization, including what happens on timeout, OOM, malformed performance output, and monitor failure.
+3. Auditable design: propose shell/Python component boundaries, a metadata schema, atomic-write or partial-file conventions, and how to preserve stdout/stderr and the exact prompt used.
+4. Analysis integrity: explain how to prevent a failed run or variable generated-token count from producing a misleading throughput comparison, and how a parser should treat unknown llama.cpp output formats.
+5. Test plan: provide at least six tests, including one simulated backend failure, one missing monitor, one prompt containing spaces/newlines, one partial output, and one changed prompt hash.
+6. Pre-merge review: name the three highest-risk design flaws in your proposal and the concrete changes that would fix them.
+
+Use these exact headings: Requirements and Invariants; State Machine; Auditable Design; Analysis Integrity; Test Plan; Pre-merge Review. Keep the design implementation-oriented and avoid claiming that a metric is available if the specification does not guarantee it.
+
+Final model response
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b10110-8f5ab832c
+model      : /home/dilusha/llm-research/models/Gemma/gemma-4-26B-A4B-it-GGUF/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf
+ftype      : Q4_K - Medium
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> You are simulating a senior coding-agent design review without external tools, internet access, shell commands, package installation, or file-system inspection. Work only from the specification and artifacts below. Be concrete enough that another engineer could implement and test the design.
+
+Project:
+A research project needs a command-line llama.cpp benchmark runner supporting CPU, CUDA, and Vulkan; model aliases from a configuration file; fixed workload prompts; performance output; hardware me ... (truncated)
+### Requirements and Invariants
+
+**Inputs:**
+* **Configuration:** Model aliases (mapping names to paths), workload definitions (prompt templates), and hardware profile.
+* **Execution Parameters:** Backend (CPU/CUDA/Vulkan), context length, generation limit, temperature, GPU layers, thread count, and driver/build versions.
+* **Workloads:** Fixed prompt sets for `chat`, `batch`, `coding`, `summarization`, `agentic`, and `world_knowledge`.
+
+**Artifacts (Per Run):**
+* `[identity_hash].json`: Metadata and performance metrics.
+* `[identity_hash].raw`: Combined `stdout` and `stderr` from `llama.cpp`.
+* `[identity_hash].response.txt`: Extracted text output.
+* `[identity_hash].prompt.txt`: The exact interpolated prompt used.
+
+**Experimental Identity Tuple (The Uniqueness Constraint):**
+A run is uniquely identified by the hash of:
+`{model_path, backend, hardware_label, context_len, gen_limit, prompt_hash, temperature, gpu_layers, build_version, driver_version}`.
+
+**Success/Failure States:**
+* **Success:** Process exits with code 0, `llama.cpp` provides valid performance metrics in `stdout`, and text is generated.
+* **Failed Model Run:** Process exits non-zero, or `llama.cpp` fails to produce metrics, or the model crashes (OOM/Segfault).
+* **Incomplete Monitoring:** Process succeeds, but resource monitor (e.g., `nvidia-smi`) fails to provide data. This is **not** a model failure.
+
+**Ambiguity to Resolve:**
+The specification states "Each condition is repeated three times." It is unclear if the runner should automatically handle the triple-repetition logic (looping 3x) or if the caller is responsible for invoking the runner three times. I will design for the runner to execute a single instance, leaving orchestration to the caller to ensure independence.
+
+---
+
+### State Machine
+
+1.  **VALIDATION:**
+    *   Check if model path and workload prompt exist.
+    *   Calculate `identity_hash`.
+    *   Check if results for this hash already exist (prevent accidental overwrite).
+2.  **PRE-FLIGHT:**
+    *   Capture hardware metadata (Driver version, CUDA version, CPU info).
+    *   Initialize resource monitor thread (asynchronous).
+3.  **LAUNCH:**
+    *   Spawn `llama.cpp` subprocess with redirected `stdout`/`stderr` to a temporary buffer/file.
+    *   Start timer.
+4.  **MONITORING:**
+    *   *Continuous:* Sample GPU/CPU metrics at interval $N$.
+    *   *Timeout:* If process exceeds `max_wall_time`, send `SIGTERM` $\rightarrow$ `SIGKILL`.
+5.  **PROCESS EXIT:**
+    *   **Case A (Success):** Exit code 0. Parse `stdout` for `llama.cpp` metrics.
+    *   **Case B (OOM/Crash):** Exit code $\neq$ 0. Mark run as `status: FAILED`.
+    *   **Case C (Malformed Output):** Exit code 0, but metrics parsing fails. Mark as `status: PARSE_ERROR`.
+6.  **FINALIZATION:**
+    *   Stop monitor thread.
+    *   Atomic write of `.json`, `.raw`, `.response.txt`, and `.prompt.txt`.
+    *   If monitor failed but model succeeded, set `monitoring_available: false` in JSON.
+
+---
+
+### Auditable Design
+
+**Component Boundaries:**
+*   **Runner (Python):** Orchestrator. Handles subprocess management, identity hashing, and file I/O.
+*   **Monitor (Python/Subprocess):** Independent sidecar process/thread that polls system stats.
+*   **Parser (Python):** Pure function that extracts metrics from `llama.cpp` text output.
+
+**Metadata Schema (`.json`):**
+```json
+{
+  "identity": {"hash": "abc123...", "params": {...}},
+  "status": "SUCCESS | FAILED | PARSE_ERROR",
+  "metrics": {"tps": 12.5, "tokens_gen": 150, "time_ms": 12000},
+  "monitoring": {"available": true, "samples": [...]},
+  "hardware": {"driver": "535.12", "gpu": "RTX 4090"}
+}
+```
+
+**Atomic/Partial Write Convention:**
+To prevent corruption, the runner writes all files to a `.tmp/` directory first. Only once the last file (the `.json` metadata) is successfully closed does it move all files to the final destination using `os.rename`.
+
+**Preservation Strategy:**
+*   `stdout/stderr` $\rightarrow$ `[hash].raw` (raw dump).
+*   `prompt` $\rightarrow$ `[hash].prompt.txt` (the text after template interpolation).
+*   `llama.cpp` output $\rightarrow$ `[hash].response.txt` (cleaned text).
+
+---
+
+### Analysis Integrity
+
+**Preventing Misleading Throughput:**
+A common error is calculating `tokens / total_time` where `total_time` includes the model loading phase.
+*   **Constraint:** The parser must only use the `eval time` or `generation time` reported by `llama.cpp` metrics, not the wall-clock time of the Python subprocess.
+*   **Token Count Variance:** If a run generates 10 tokens instead of 256 due to an early stop, the throughput ($tokens/sec$) must be calculated using the *actual* token count reported by the model, not the `gen_limit`.
+
+**Handling Unknown Formats:**
+If `llama.cpp` updates and changes its output format, the parser must not guess. If the expected regex patterns (e.g., `eval time = ...`) are missing, the runner must flag the run as `status: PARSE_ERROR`. This prevents the researcher from comparing a "0.0 TPS" run against valid data.
+
+---
+
+### Test Plan
+
+1.  **Simulated Backend Failure:** Run with an invalid backend string (e.g., `--backend nonexistent`). Verify `status: FAILED` and `.raw` contains the error.
+2.  **Missing Monitor:** Manually kill the monitoring thread/process during a run. Verify `.json` shows `monitoring_available: false` but `status: SUCCESS`.
+3.  **Complex Prompt:** Use a `coding` workload prompt containing `\n`, `\t`, and `"quotes"`. Verify `[hash].prompt.txt` matches the input exactly.
+4.  **Partial Output:** Simulate a process that writes half a response and then receives `SIGKILL`. Verify `status: FAILED` and `.raw` contains the partial log.
+5.  **Identity Collision/Change:** Run a prompt, then change only the `temperature`. Verify a new `identity_hash` is generated and no files are overwritten.
+6.  **Malformed Metrics:** Inject a dummy `stdout` where `llama.cpp` output is missing the `eval time` line. Verify `status: PARSE_ERROR`.
+
+---
+
+### Pre-merge Review
+
+**High-Risk Design Flaws:**
+
+1.  **Race Condition in Monitoring:** The monitor and the model process might compete for system resources (e.g., GPU memory/bandwidth), skewing results.
+    *   *Fix:* The monitor must be strictly "read-only" (e.g., `nvidia-smi --query-gpu=...`) and the runner must document that monitoring overhead is a known experimental variable.
+2.  **Identity Hash Fragility:** Using a hash of the driver version might cause the same hardware to be treated as "different" if a background driver update occurs, bloating the dataset.
+    *   *Fix:* Explicitly separate "Hardware Label" (the user's intended ID) from "System Environment" in the metadata to allow filtering.
+3.  **Subprocess Zombie/Orphan:** If the Python runner crashes, `llama.cpp` might continue running, consuming the GPU and blocking future tests.
+    *   *Fix:* Use `atexit` handlers and `subprocess.Popen` with a process group (`os.setpgrp`) to ensure `SIGTERM` is sent to the entire group on runner exit.

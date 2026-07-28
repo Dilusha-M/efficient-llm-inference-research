@@ -1,0 +1,139 @@
+
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b10110-8f5ab832c
+model      : /home/dilusha/llm-research/models/Gemma/gemma-4-26B-A4B-it-GGUF/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf
+ftype      : Q4_K - Medium
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> You are simulating a senior coding-agent design review without external tools, internet access, shell commands, package installation, or file-system inspection. Work only from the specification and artifacts below. Be concrete enough that another engineer could implement and test the design.
+
+Project:
+A research project needs a command-line llama.cpp benchmark runner supporting CPU, CUDA, and Vulkan; model aliases from a configuration file; fixed workload prompts; performance output; hardware me ... (truncated)
+### Requirements and Invariants
+
+**Inputs:**
+*   **Configuration:** Model aliases (mapping name $\to$ path), backend selection (CPU, CUDA, Vulkan), hardware metadata.
+*   **Workload Definitions:** Fixed prompts for `chat`, `batch`, `coding`, `summarization`, `agentic`, and `world_knowledge`.
+*   **Parameters:** Context length ($N$), generation limit ($G$), temperature ($T$), CPU threads ($C$), GPU layers ($L$), build version, and driver version.
+
+**Artifacts:**
+*   **Raw Output:** `stdout` (llama.cpp metrics) and `stderr` (logs) preserved exactly.
+*   **Response File:** `response.txt` containing the generated text.
+*   **Metadata File:** `.json` file containing the experimental identity and run status.
+*   **Monitoring Data:** Time-series resource usage (if available).
+
+**Success/Failure States:**
+*   **SUCCESS:** Process exits with code 0; `response.txt` is non-empty; performance metrics are parsed successfully.
+*   **MODEL_FAILURE:** Process exits non-zero OR `response.txt` is empty/malformed; metrics are invalid.
+*   **MONITOR_MISSING:** Process exits 0; metrics are valid; resource monitoring data is absent or incomplete.
+
+**Experimental Identity Tuple (The "Uniqueness Key"):**
+To prevent result mixing, a run is uniquely identified by the hash of:
+`{model_path, backend, hardware_label, context, gen_limit, prompt_text, temperature, gpu_layers, build_version, driver_version}`
+
+**Ambiguity to Resolve:**
+*   *Definition of "Partial Output":* If `llama.cpp` exits with code 0 but produces only 10 tokens when the limit was 256, is this a `SUCCESS` (the model finished naturally) or a `MODEL_FAILURE` (the model was interrupted)? The design must require the runner to check if the generated token count matches the expected stopping condition.
+
+---
+
+### State Machine
+
+1.  **VALIDATE:** Check existence of model, prompt, and backend drivers. Generate the Identity Tuple. Check if a result for this exact tuple already exists (to prevent accidental overwrites).
+2.  **PREPARE:** Create a unique run directory. Initialize empty `stdout.log`, `stderr.log`, and `response.txt`.
+3.  **LAUNCH:** Spawn `llama.cpp` as a subprocess. Simultaneously spawn the Monitor process (if available).
+4.  **MONITORING:**
+    *   *Normal:* Sample CPU/GPU/RAM at intervals.
+    *   *Timeout:* If process exceeds a predefined wall-clock limit, send `SIGTERM` $\to$ `SIGKILL`. Transition to **FAILURE**.
+    *   *OOM/Crash:* If process exits with non-zero code, capture exit code. Transition to **FAILURE**.
+    *   *Monitor Failure:* If the monitor process dies but `llama.cpp` is running, log `monitor_status: unavailable` and continue. Transition to **MONITOR_MISSING**.
+5.  **PROCESS EXIT:** Wait for `llama.cpp` to terminate.
+6.  **PARSE:** Extract metrics from `stdout.log`.
+    *   If parsing fails (malformed output): Transition to **MODEL_FAILURE**.
+7.  **FINALIZATION:**
+    *   If **SUCCESS**: Write `metadata.json` with all metrics and identity.
+    *   If **MODEL_FAILURE**: Write `metadata.json` with `status: failed` and the exit code.
+    *   If **MONITOR_MISSING**: Write `metadata.json` with `status: success` and `monitoring: missing`.
+
+---
+
+### Auditable Design
+
+**Component Boundaries:**
+*   **Orchestrator (Python):** Manages the state machine, identity hashing, directory creation, and metadata writing.
+*   **Executor (Subprocess):** The raw `llama.cpp` binary.
+*   **Monitor (Python/Shell):** A decoupled lightweight process reading `/proc` or `nvidia-smi`.
+
+**Metadata Schema (`metadata.json`):**
+```json
+{
+  "identity": { "model": "...", "backend": "cuda", "context": 4096, "prompt_hash": "abc123..." },
+  "status": "success | model_failure | monitor_missing",
+  "metrics": { "tps": 12.5, "tokens_generated": 256, "time_ms": 20480 },
+  "hardware": { "gpu": "RTX 4090", "driver": "535.12" },
+  "files": { "stdout": "run_001/stdout.log", "response": "run_001/response.txt" }
+}
+```
+
+**Atomic/Partial Conventions:**
+*   **Directory-per-run:** All files for a single run live in `runs/<identity_hash>/`.
+*   **Atomic Metadata:** The `metadata.json` is written *last*. A directory without a `metadata.json` is treated as an "In-Progress" or "Crashed" run.
+*   **Prompt Preservation:** The exact prompt used must be written to `prompt.txt` within the run directory to allow manual audit of the input.
+
+---
+
+### Analysis Integrity
+
+**Preventing Misleading Throughput:**
+*   **Token-Weighted Metrics:** Throughput (tokens/sec) must never be calculated as `total_time / expected_time`. It must be `actual_tokens_generated / actual_time_taken`.
+*   **The "Short-Run" Trap:** If a model fails mid-generation, the `tps` might look artificially high. The parser must flag any run where `tokens_generated < gen_limit` as potentially anomalous, even if it exits with code 0.
+
+**Parser Robustness:**
+*   **Strict Parsing:** If the parser encounters an unknown `llama.cpp` output format or missing key-value pairs (e.g., `eval time` is missing), it must abort the run as `MODEL_FAILURE`. It must not "guess" or use default values.
+
+---
+
+### Test Plan
+
+1.  **Simulated Backend Failure:** Mock `llama.cpp` to exit with `exit 1`. Verify `metadata.json` reports `status: model_failure`.
+2.  **Missing Monitor:** Kill the monitor process immediately after `llama.cpp` starts. Verify `metadata.json` reports `status: monitor_missing` but `metrics` are still parsed.
+3.  **Complex Prompt:** Use a prompt containing `\n`, `\t`, and `"` characters. Verify `prompt.txt` matches the input exactly and `llama.cpp` receives the correct string.
+4.  **Partial Output:** Mock `llama.cpp` to print metrics but exit with code 0 after only 5 tokens. Verify the runner identifies this as a potential failure or flags it for audit.
+5.  **Identity Collision/Change:** Run a prompt, then change one character in the prompt. Verify a new directory is created and the old results are not overwritten.
+6.  **Malformed Metrics:** Provide a `stdout.log` where the `tps` line is corrupted (e.g., `tps: NaN`). Verify the parser triggers `MODEL_FAILURE`.
+
+---
+
+### Pre-merge Review
+
+**High-Risk Design Flaws:**
+
+1.  **Risk:** *Race condition between Monitor and Executor.* If the monitor starts too late, early resource spikes are missed.
+    *   **Fix:** The Orchestrator must spawn the Monitor *before* the Executor and use a synchronization primitive (like a dummy file) to ensure the Monitor is active before the subprocess starts.
+2.  **Risk:** *Identity Hash Collision.* Using a weak hash (like CRC32) might cause different configurations to overwrite each other.
+    *   **Fix:** Use `SHA-256` for the identity tuple to ensure collision resistance across large-scale research sweeps.
+3.  **Risk:** *Zombie Processes.* If the Orchestrator is killed, `llama.cpp` and the Monitor might continue running.
+    *   **Fix:** Implement a `signal` handler in the Python Orchestrator that catches `SIGINT/SIGTERM` and explicitly sends `SIGKILL` to the entire process group.
+
+[ Prompt: 428.7 t/s | Generation: 34.1 t/s ]
+
+
+Exiting...

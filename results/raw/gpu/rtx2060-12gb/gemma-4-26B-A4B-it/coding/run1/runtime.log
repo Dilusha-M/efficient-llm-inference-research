@@ -1,0 +1,184 @@
+
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b10110-8f5ab832c
+model      : /home/dilusha/llm-research/models/Gemma/gemma-4-26B-A4B-it-GGUF/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf
+ftype      : Q4_K - Medium
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> You are reviewing production-quality Python for an inference benchmark. Implement the function below in Python using only the standard library.
+
+Task:
+Implement `summarize_decode_speeds(lines)` where `lines` is an iterable of strings. Return a dictionary with exactly these keys:
+
+* `count`: number of valid decode records
+* `min_tps`: minimum valid tps, or `None` when there are no valid records
+* `max_tps`: maximum valid tps, or `None` when there are no valid records
+* `avg_tps`: arithmetic mean  ... (truncated)
+```python
+import math
+
+def summarize_decode_speeds(lines):
+    """
+    Processes lines to extract 'tps' values for 'event=decode' records.
+    Uses a one-pass algorithm with O(1) extra space.
+    """
+    count = 0
+    min_tps = float('inf')
+    max_tps = float('-inf')
+    sum_tps = 0.0
+
+    for line in lines:
+        # Requirement: Ignore non-string items
+        if not isinstance(line, str):
+            continue
+
+        tokens = line.split()
+        
+        # State for current line parsing
+        event_type = None
+        tps_value = None
+        is_malformed = False
+        
+        # We need to track seen keys to detect duplicates within a single line
+        # Since we only care about 'event' and 'tps', we use a small set/dict
+        # which remains O(1) relative to the total input size.
+        seen_keys = {}
+
+        for token in tokens:
+            if '=' not in token:
+                continue
+            
+            parts = token.split('=', 1)
+            key = parts[0]
+            val = parts[1]
+
+            # Requirement: Detect duplicate keys (including same value)
+            if key in seen_keys:
+                is_malformed = True
+                break
+            seen_keys[key] = val
+
+            if key == 'event':
+                event_type = val
+            elif key == 'tps':
+                try:
+                    num = float(val)
+                    # Requirement: Finite, strictly positive, non-nan, non-inf
+                    if not math.isfinite(num) or num <= 0:
+                        is_malformed = True
+                        break
+                    tps_value = num
+                except ValueError:
+                    is_malformed = True
+                    break
+            else:
+                # Other keys are ignored but don't invalidate the line
+                pass
+
+        # Validate record requirements
+        if (not is_malformed and 
+            event_type == 'decode' and 
+            tps_value is not None):
+            
+            count += 1
+            sum_tps += tps_value
+            if tps_value < min_tps:
+                min_tps = tps_value
+            if tps_value > max_tps:
+                max_tps = tps_value
+
+    # Handle empty results or no valid records
+    if count == 0:
+        return {
+            "count": 0,
+            "min_tps": None,
+            "max_tps": None,
+            "avg_tps": None
+        }
+
+    return {
+        "count": count,
+        "min_tps": min_tps,
+        "max_tps": max_tps,
+        "avg_tps": round(sum_tps / count, 3)
+    }
+
+if __name__ == "__main__":
+    test_lines = [
+        "event=decode tps=50.5",             # 1. Valid record
+        "event=decode tps=10.2 user=admin",  # 2. Valid with extra field
+        "event=prefill tps=20.0",            # 3. Non-decode event
+        "event=decode tps=invalid",          # 4. Malformed float
+        "event=decode tps=nan",              # 5. NaN
+        "event=decode tps=10.0 tps=10.0",    # 6. Duplicate key (same value)
+        None,                                # 7. Non-string item
+        "event=decode tps=10.333333",        # 8. Valid record (requires rounding)
+    ]
+
+    # Expected Calculation:
+    # Valid 1: 50.5
+    # Valid 2: 10.2
+    # Valid 8: 10.333333
+    # Count: 3
+    # Min: 10.2
+    # Max: 50.5
+    # Avg: (50.5 + 10.2 + 10.333333) / 3 = 71.033333 / 3 = 23.67777... -> 23.678
+    
+    expected = {
+        "count": 3,
+        "min_tps": 10.2,
+        "max_tps": 50.5,
+        "avg_tps": 23.678
+    }
+
+    result = summarize_decode_speeds(test_lines)
+    print(f"Result:   {result}")
+    print(f"Expected: {expected}")
+
+    # Assertions to catch common mistakes
+    assert result["count"] == 3, "Failed to count valid records correctly."
+    assert result["avg_tps"] == 23.678, f"Rounding error or incorrect average. Got {result['avg_tps']}"
+    
+    # Test empty case
+    assert summarize_decode_speeds([])["min_tps"] is None, "Empty input should return None for metrics."
+    
+    print("\nAll assertions passed!")
+```
+
+### Technical Explanations
+
+#### 1. Why naive substring matching fails
+Naive substring matching (e.g., using `if "event=decode" in line and "tps=" in line`) is dangerous for two reasons:
+*   **Wrong Event/Key Context:** A line like `event=prefill tps=10.0 extra="event=decode"` would be incorrectly flagged as a valid decode event because the substring exists inside a different field's value.
+*   **Malformed Duplicates:** Substring matching cannot detect if `tps` appears twice in the same line. If a line contains `event=decode tps=10.0 tps=20.0`, a substring check would pass, whereas the requirements dictate this is malformed due to conflicting/duplicate keys. By splitting into tokens and tracking keys in a dictionary, we ensure structural integrity.
+
+#### 2. Empty-result policy
+The policy returns `None` for `min`, `max`, and `avg` when no valid records are found. This is a standard production practice to distinguish between a "zero value" (which might be a valid measurement) and "no data available" (which is a state of the system). Returning `0` for `min_tps` when no records exist would be mathematically incorrect and could trigger false alerts in monitoring systems.
+
+#### 3. Complexity Analysis
+*   **Time Complexity:** $O(N)$, where $N$ is the total number of characters across all lines. We iterate through the lines and tokens exactly once.
+*   **Space Complexity:** $O(1)$ extra space. While we use a dictionary `seen_keys` to track duplicates, its size is bounded by the number of tokens in a *single* line (typically a small constant for log lines), not the total number of lines in the input. We do not store the lines in memory.
+
+[ Prompt: 514.7 t/s | Generation: 34.0 t/s ]
+
+
+Exiting...
