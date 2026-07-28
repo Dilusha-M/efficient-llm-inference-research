@@ -1,0 +1,155 @@
+
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b10110-8f5ab832c
+model      : /home/dilusha/llm-research/models/Gemma/gemma-4-12B-it-QAT-GGUF/gemma-4-12B-it-QAT-Q4_0.gguf
+ftype      : Q4_0
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> You are reviewing production-quality Python for an inference benchmark. Implement the function below in Python using only the standard library.
+
+Task:
+Implement `summarize_decode_speeds(lines)` where `lines` is an iterable of strings. Return a dictionary with exactly these keys:
+
+* `count`: number of valid decode records
+* `min_tps`: minimum valid tps, or `None` when there are no valid records
+* `max_tps`: maximum valid tps, or `None` when there are no valid records
+* `avg_tps`: arithmetic mean  ... (truncated)
+```python
+import math
+from typing import Iterable, Dict, Optional, Any
+
+def summarize_decode_speeds(lines: Iterable[Any]) -> Dict[str, Optional[float]]:
+    """
+    Summarizes the decode speeds from a stream of log lines.
+    
+    Processes records in a single pass with O(1) auxiliary space.
+    """
+    count = 0
+    min_tps = float('inf')
+    max_tps = float('-inf')
+    total_tps = 0.0
+
+    for line in lines:
+        # Ignore non-string items
+        if not isinstance(line, str):
+            continue
+
+        # Tokenize by whitespace
+        tokens = line.split()
+        if not tokens:
+            continue
+
+        # Parse key-value pairs into a dictionary to handle duplicates
+        # and ensure we only capture the correct event/tps values.
+        record = {}
+        is_malformed = False
+        
+        for token in tokens:
+            if '=' not in token:
+                continue
+            
+            key, val = token.split('=', 1)
+            # If a key is repeated, the line is malformed per requirements
+            if key in record:
+                is_malformed = True
+                break
+            record[key] = val
+
+        if is_malformed:
+            continue
+
+        # Validation Logic:
+        # 1. Must contain event=decode
+        # 2. Must contain tps=<value>
+        # 3. Value must be finite, > 0, and a valid float
+        if record.get("event") == "decode" and "tps" in record:
+            try:
+                tps_val = float(record["tps"])
+                
+                # Check for finite, strictly positive, and non-zero
+                if math.isfinite(tps_val) and tps_val > 0:
+                    count += 1
+                    total_tps += tps_val
+                    if tps_val < min_tps:
+                        min_tps = tps_val
+                    if tps_val > max_tps:
+                        max_tps = tps_val
+                else:
+                    # Covers nan, inf, and <= 0
+                    continue
+            except ValueError:
+                # Handles non-numeric strings
+                continue
+
+    return {
+        "count": count,
+        "min_tps": min_tps if count > 0 else None,
+        "max_tps": max_tps if count > 0 else None,
+        "avg_tps": round(total_tps / count, 3) if count > 0 else None
+    }
+
+if __name__ == "__main__":
+    # Demonstration Data
+    demo_lines = [
+        "event=decode tps=10.5 key=test",           # Valid 1
+        "event=decode tps=20.123456 extra=val",     # Valid 2 (Rounding test)
+        "event=generate tps=50.0",                   # Invalid: wrong event
+        "event=decode tps=abc",                      # Invalid: malformed float
+        "event=decode tps=nan",                      # Invalid: nan
+        "event=decode tps=10.0 tps=20.0",            # Invalid: duplicate key
+        12345,                                         # Invalid: non-string
+        "event=decode tps=-5.0",                     # Invalid: negative
+        "event=decode tps=0.0",                      # Invalid: zero
+        "event=decode tps=5.5",                      # Valid 3
+    ]
+
+    # Expected Summary:
+    # Valid records: 10.5, 20.123456, 5.5
+    # Count: 3
+    # Min: 5.5
+    # Max: 20.123456
+    # Avg: (10.5 + 20.123456 + 5.5) / 3 = 36.123456 / 3 = 12.041152 -> 12.041
+    
+    summary = summarize_decode_speeds(demo_lines)
+    print(summary)
+
+    # Assertions
+    # 1. Ensure we don't count the duplicate key line as valid.
+    assert summary["count"] == 3, f"Expected count 3, got {summary['count']}"
+    # 2. Ensure the average is correctly rounded to 3 decimal places.
+    assert summary["avg_tps"] == 12.041, f"Expected avg 12.041, got {summary['avg_tps']}"
+```
+
+### Technical Explanations
+
+**Why naive substring matching fails:**
+1. **Duplicate Keys:** If a line contains `event=decode tps=10.0 tps=50.0`, a substring search for `tps=` might find the first occurrence and treat it as valid, whereas the requirements state duplicate keys with conflicting values make the record malformed.
+2. **Partial Matches:** A substring search for `event=decode` might match `event=decode_metadata` or `not_event=decode`, leading to false positives.
+3. **Contextual Integrity:** Parsing into a dictionary ensures that the `tps` value belongs to the specific record being evaluated and allows for easy validation of the "exactly one unique key" constraint.
+
+**Empty-result policy:**
+If no valid records are found, the count is `0` and the `min`, `max`, and `avg` values are `None`. This is the standard production approach to differentiate between a calculation resulting in zero (e.g., an average of zero) and the absence of data, preventing `ZeroDivisionError` and providing a clear API for downstream consumers.
+
+[ Prompt: 80.5 t/s | Generation: 9.8 t/s ]
+
+
+Exiting...

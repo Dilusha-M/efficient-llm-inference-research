@@ -10,9 +10,9 @@ BASE="$HOME/llm-research"
 
 BACKEND="cuda"
 HARDWARE="gtx1660-super-6gb"
-MODEL="QWEN35_9B"
+MODEL="GEMMA4_12B"
 RUNS=3
-GPU_LAYERS=999
+GPU_LAYERS=35
 # CUDA-only MoE CPU offload. Leave empty for ordinary layer offloading.
 # Example: N_CPU_MOE=30 keeps MoE weights from the first 30 layers on CPU.
 N_CPU_MOE=""

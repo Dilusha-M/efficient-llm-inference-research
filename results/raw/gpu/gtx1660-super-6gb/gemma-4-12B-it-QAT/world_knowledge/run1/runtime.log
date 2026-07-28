@@ -1,0 +1,70 @@
+
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b10110-8f5ab832c
+model      : /home/dilusha/llm-research/models/Gemma/gemma-4-12B-it-QAT-GGUF/gemma-4-12B-it-QAT-Q4_0.gguf
+ftype      : Q4_0
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> Answer all 30 questions using only your existing knowledge. Do not browse or use tools.
+
+Output exactly one line per question in this format:
+01. answer
+02. answer
+
+Keep the question number, answer every question, and provide only the shortest correct answer. Do not add explanations, confidence statements, headings, bullets, or extra lines. For a person, give the commonly used full name; for a place, give the commonly used English name; for a year or unit, give the standard form.
+
+01. What is th ... (truncated)
+01. Canberra
+02. Na
+03. Mars
+04. Pacific Ocean
+05. Portuguese
+06. Heart
+07. Ampere
+08. Nitrogen
+09. Photosynthesis
+10. Moon
+11. Ulaanbaatar
+12. Strait of Gibraltar
+13. Jane Austen
+14. Au
+15. Treaty of Versailles
+16. Double helix
+17. Peru
+18. Hertz
+19. Suez Canal
+20. Homer
+21. Blue whale
+22. Egypt
+23. Diamond
+24. Mercury
+25. Antarctic Desert
+26. Marie Curie
+27. Plato
+28. 1215
+29. 9.8 m/s²
+30. Prime Meridian
+
+[ Prompt: 77.9 t/s | Generation: 10.6 t/s ]
+
+
+Exiting...
