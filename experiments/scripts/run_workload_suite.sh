@@ -10,7 +10,7 @@ BASE="$HOME/llm-research"
 
 BACKEND="cuda"
 HARDWARE="rtx2060-12gb"
-MODEL="GEMMA4_E2B"
+MODEL="QWEN35_9B"
 RUNS=3
 
 
