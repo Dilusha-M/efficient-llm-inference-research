@@ -1,0 +1,182 @@
+
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b10110-8f5ab832c
+model      : /home/dilusha/llm-research/models/Gemma/gemma-4-26B-A4B-it-GGUF/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf
+ftype      : Q4_K - Medium
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> You are reviewing production-quality Python for an inference benchmark. Implement the function below in Python using only the standard library.
+
+Task:
+Implement `summarize_decode_speeds(lines)` where `lines` is an iterable of strings. Return a dictionary with exactly these keys:
+
+* `count`: number of valid decode records
+* `min_tps`: minimum valid tps, or `None` when there are no valid records
+* `max_tps`: maximum valid tps, or `None` when there are no valid records
+* `avg_tps`: arithmetic mean  ... (truncated)
+```python
+import math
+
+def summarize_decode_speeds(lines):
+    """
+    Summarizes decode speeds from an iterable of log lines.
+    
+    Complexity:
+    - Time: O(N) where N is the number of lines.
+    - Space: O(1) as we only store running aggregates (sum, count, min, max).
+    """
+    count = 0
+    total_tps = 0.0
+    min_tps = float('inf')
+    max_tps = float('-inf')
+
+    for line in lines:
+        # Requirement: Ignore non-string items
+        if not isinstance(line, str):
+            continue
+
+        # Split on whitespace to tokenize the line
+        tokens = line.split()
+        
+        event_type = None
+        tps_value = None
+        is_malformed = False
+
+        # Single pass through tokens to extract event and tps
+        for token in tokens:
+            if '=' not in token:
+                continue
+            
+            key, val = token.split('=', 1)
+            
+            if key == 'event':
+                # Check if we already saw an event key (duplicate key check)
+                if event_type is not None:
+                    is_malformed = True
+                    break
+                event_type = val
+            
+            elif key == 'tps':
+                # Check for duplicate tps key
+                if tps_value is not None:
+                    is_malformed = True
+                    break
+                try:
+                    f_val = float(val)
+                    # Requirement: Finite, strictly positive
+                    if not math.isfinite(f_val) or f_val <= 0:
+                        is_malformed = True
+                        break
+                    tps_value = f_val
+                except ValueError:
+                    is_malformed = True
+                    break
+            else:
+                # Other keys are allowed but ignored for the purpose of this calculation
+                pass
+
+        # Validation: Must have event=decode, a valid tps, and no malformations
+        if not is_malformed and event_type == 'decode' and tps_value is not None:
+            count += 1
+            total_tps += tps_value
+            if tps_value < min_tps:
+                min_tps = tps_value
+            if tps_value > max_tps:
+                max_tps = tps_value
+
+    # Handle empty result policy
+    if count == 0:
+        return {
+            "count": 0,
+            "min_tps": None,
+            "max_tps": None,
+            "avg_tps": None
+        }
+
+    return {
+        "count": count,
+        "min_tps": min_tps,
+        "max_tps": max_tps,
+        "avg_tps": round(total_tps / count, 3)
+    }
+
+if __name__ == "__main__":
+    # Demonstration lines covering all requirement cases:
+    demo_lines = [
+        "event=decode tps=50.5",               # 1. Valid record
+        "event=decode tps=10.2 user=admin",    # 2. Another key=value field
+        "event=prefill tps=100.0",             # 3. Non-decode event
+        "event=decode tps=abc",                # 4. Malformed float
+        "event=decode tps=nan",                # 5. nan
+        "event=decode tps=20.0 tps=20.0",      # 6. Duplicate key (same value)
+        12345,                                 # 7. Non-string item
+        "event=decode tps=10.11111",           # 8. Valid record requiring rounding
+    ]
+
+    # Expected Summary Calculation:
+    # Valid 1: 50.5
+    # Valid 2: 10.2
+    # Valid 8: 10.11111
+    # Count: 3
+    # Min: 10.11111
+    # Max: 50.5
+    # Avg: (50.5 + 10.2 + 10.11111) / 3 = 23.603703... -> 23.604
+    
+    expected = {
+        "count": 3,
+        "min_tps": 10.11111,
+        "max_tps": 50.5,
+        "avg_tps": 23.604
+    }
+
+    result = summarize_decode_speeds(demo_lines)
+    print(f"Result:   {result}")
+    print(f"Expected: {expected}")
+
+    # Assertions to catch common errors
+    # 1. Catch incorrect rounding or precision errors
+    assert result["avg_tps"] == 23.604, f"Rounding error: expected 23.604, got {result['avg_tps']}"
+    # 2. Catch failure to ignore non-decode events or malformed duplicates
+    assert result["count"] == 3, f"Count error: expected 3, got {result['count']}"
+
+    print("\nAll assertions passed!")
+```
+
+### Explanations
+
+#### Why naive substring matching is dangerous
+1.  **Wrong Event Context**: A naive `if "event=decode" in line` might return true for a line like `comment="this is not an event=decode"`. By splitting into tokens and checking the specific key-value pair, we ensure the logic adheres to the structured format.
+2.  **Malformed Duplicates**: A substring search for `tps=` doesn't detect if the key `tps` appears twice in the same line. If a line contains `tps=10 tps=20`, a substring approach might simply grab the first or last value, whereas the requirements specify this is a malformed line that must be ignored.
+
+#### Empty-result policy
+The policy returns `None` for `min`, `max`, and `avg` when `count` is 0. This is standard in production data processing to distinguish between a "zero value" (which is statistically significant) and "missing data" (where no observations exist to calculate a metric).
+
+#### Summary of Demonstration
+*   **Valid Records**: 3 (50.5, 10.2, 10.11111)
+*   **Min TPS**: 10.11111
+*   **Max TPS**: 50.5
+*   **Avg TPS**: 23.604 (rounded from 23.603703...)
+
+[ Prompt: 110.6 t/s | Generation: 22.6 t/s ]
+
+
+Exiting...

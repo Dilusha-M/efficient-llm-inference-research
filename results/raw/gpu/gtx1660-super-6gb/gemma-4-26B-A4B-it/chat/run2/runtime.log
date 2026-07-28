@@ -1,0 +1,76 @@
+
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b10110-8f5ab832c
+model      : /home/dilusha/llm-research/models/Gemma/gemma-4-26B-A4B-it-GGUF/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf
+ftype      : Q4_K - Medium
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> You are answering a graduate-level systems question. Give a technically precise answer, but keep it compact enough to be useful to an engineer making a hardware decision.
+
+Scenario:
+A 7B decoder-only model is served on a 6 GB consumer GPU with 32 GB system RAM. The model weights fit on the GPU, but the key-value (KV) cache does not always fit there. A user sends a 2,000-token prompt and requests 300 generated tokens. The system reports excellent prompt-processing throughput but becomes much slow ... (truncated)
+### Analysis of System Bottlenecks in LLM Inference
+
+#### 1. KV Cache Lifecycle
+*   **Prompt Processing (Prefill):** The system processes the 2,000-token prompt in parallel. The attention mechanism computes $Q, K, V$ for all tokens simultaneously. The resulting $K$ and $V$ tensors are written to the KV cache. This stage is **compute-bound** (matrix-matrix multiplications).
+*   **Token-by-Token Decoding:** For each new token, the model computes $Q$ for only the *latest* token. To compute attention, it must retrieve the $K$ and $V$ tensors for **all previous tokens** from the cache. These previous tensors are **reused** (not recomputed), while the new $K, V$ are appended. This stage is **memory-bandwidth bound** (matrix-vector multiplications).
+
+#### 2. Resource Stress and Throughput vs. Latency
+*   **Prompt Processing** stresses the **Arithmetic Logic Units (ALUs/Tensor Cores)**. High throughput (tokens/s) is achieved through massive parallelism.
+*   **Decoding** stresses the **Memory Bandwidth**. Since each step requires reading the entire KV cache to produce a single token, the ratio of computation to data movement is extremely low.
+*   **The Disconnect:** A high prompt tok/s indicates efficient compute utilization, but it provides no guarantee of low interactive latency (time-per-token), which is governed by how fast the system can stream the KV cache from memory.
+
+#### 3. Scaling to 8,000 Tokens
+*   **Prefill Behavior:** Scaling from 2k to 8k tokens increases the computational complexity quadratically ($O(N^2)$), but because it is compute-bound, the increase in time is often sub-linear relative to the token count until the GPU reaches its compute ceiling.
+*   **Decode Behavior:** Scaling increases the KV cache size linearly. Because decoding is bandwidth-bound, the per-token latency will increase linearly as the cache grows, as more data must be moved from memory to the registers for every single token generated.
+*   **The "Cliff":** If the 8k cache exceeds GPU VRAM, the system will trigger PCIe transfers (offloading to system RAM), causing a massive latency spike due to the orders-of-magnitude difference between HBM/GDDR bandwidth and PCIe bandwidth.
+
+#### 4. General Truths vs. Implementation Dependencies
+*   **Generally True:** Decoding is memory-bandwidth bound; prefill is compute-bound; KV cache grows linearly with sequence length; offloading to system RAM increases latency.
+*   **Implementation Dependent:**
+    *   **Cache Precision:** Using FP16 vs. INT8/FP8 for the KV cache halves the required bandwidth and capacity.
+    *   **Offloading/Paging:** Whether the system uses unified memory, explicit offloading, or PagedAttention (vLLM) dictates how efficiently memory is managed.
+    *   **Kernel Support:** FlashAttention can significantly reduce the memory footprint and increase prefill speed, but its impact on the decoding phase (which is bandwidth-limited) is secondary to KV cache movement.
+
+#### 5. Proposed Experimental Investigation
+To isolate the bottleneck, perform these three controlled comparisons:
+1.  **Isolate Weight Bandwidth:** Measure decoding latency with a very short context (e.g., 10 tokens). If latency is high, the bottleneck is the weight loading (Model Bandwidth).
+2.  **Isolate KV-Cache Traffic:** Measure decoding latency while increasing context length from 10 to 2,000 tokens. If latency scales linearly with context length, the bottleneck is KV-cache bandwidth.
+3.  **Isolate CPU-GPU Transfer:** Compare latency at 2,000 tokens (fitting in VRAM) vs. 2,001 tokens (forcing offload). A massive, non-linear jump identifies the PCIe/System RAM transfer as the bottleneck.
+
+#### Numerical Example
+*Assumptions: Model Weights = 14GB (7B @ FP16); GPU VRAM = 6GB; System RAM = 32GB. Note: In this scenario, even weights don't fit, implying quantization (e.g., 4-bit) is active.*
+
+**Scenario A (Compute-Bound Prefill):**
+*   Prefill 2,000 tokens @ 2,000 tok/s = **1.0 second**.
+*   Decode 300 tokens @ 50 tok/s = **6.0 seconds**.
+*   *Total: 7.0s (Decoding dominates time).*
+
+**Scenario B (Extreme Prefill/Compute Heavy):**
+*   Prefill 2,000 tokens @ 100 tok/s = **20.0 seconds**.
+*   Decode 300 tokens @ 50 tok/s = **6.0 seconds**.
+*   *Total: 26.0s (Prefill dominates time).*
+
+[ Prompt: 93.5 t/s | Generation: 22.7 t/s ]
+
+
+Exiting...
