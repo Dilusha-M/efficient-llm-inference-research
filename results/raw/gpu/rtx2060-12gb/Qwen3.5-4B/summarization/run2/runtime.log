@@ -1,0 +1,80 @@
+
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b10110-8f5ab832c
+model      : /home/dilusha/llm-research/models/Qwen/Qwen3.5-4B-GGUF/Qwen3.5-4B-Q4_K_M.gguf
+ftype      : Q4_K - Medium
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> Summarize the following technical document. Focus on the experimental design, measurement methodology, limitations, and reproducibility implications.
+
+Technical document:
+
+Large language model inference on consumer hardware is constrained by a combination of memory capacity, memory bandwidth, compute throughput, software backend maturity, and workload shape. Unlike training, inference is often dominated by repeated matrix-vector operations during autoregressive decoding. During prompt processing ... (truncated)
+Here is a summary of the technical document, focusing on experimental design, measurement methodology, limitations, and reproducibility.
+
+### 1. Experimental Design
+The benchmark is structured to isolate specific performance bottlenecks inherent in consumer hardware LLM inference.
+*   **Separation of Metrics:** Throughput must be measured separately for **prompt processing** (parallel matrix-matrix operations) and **decoding** (serial matrix-vector operations with key-value cache management).
+*   **Condition Definition:** A single "benchmark condition" is defined as a tuple containing: model file, backend, hardware label, context length, generation limit, prompt file, temperature, GPU layer count, llama.cpp build, and driver environment. Any change in these variables constitutes a distinct experiment.
+*   **Workload Diversity:** Experiments utilize fixed, versioned prompts covering four patterns:
+    *   *Chat:* General explanatory generation.
+    *   *Coding:* Structured reasoning and code production.
+    *   *Summarization:* Long prompts to stress context handling.
+    *   *Batch:* Multiple unrelated tasks to test instruction separation.
+    *   *Agentic:* Simulated planning without external tools.
+*   **Hardware Scenarios:** Designs include CPU-only, single GPU, multi-GPU, and resource-constrained environments (e.g., small VRAM causing cache spilling).
+
+### 2. Measurement Methodology
+The methodology emphasizes capturing raw data and distinguishing between hardware capabilities and software maturity.
+*   **Data Capture:**
+    *   **Raw Outputs:** All `llama.cpp` stdout/stderr streams must be preserved to allow future re-parsing if extraction logic improves.
+    *   **Processed Artifacts:** CSV files are derived from raw data and metadata; they should be regenerated rather than static.
+    *   **Resource Monitoring:** Sampling occurs during runs using `nvidia-smi` (GPU power, temp, memory) and Linux interfaces (`/proc/stat`, `sensors` for CPU/RAM). Missing data points should be recorded as null, not causing run failure.
+*   **Key Metrics:**
+    *   Prompt evaluation time/tokens/sec.
+    *   Decode time/generated tokens/tokens/sec.
+    *   Time to first token (TTFT) and total generation time.
+    *   Failure status and error messages.
+*   **Repetition:** Minimum of **three runs per condition** to detect thermal throttling, power management effects, and system instability. Runs must be stored separately to analyze variance.
+
+### 3. Limitations and Validity Threats
+The document acknowledges several factors that introduce variance or bias:
+*   **Hardware vs. Software Maturity:** Comparing backends (CPU vs. CUDA vs. Vulkan) conflates hardware performance with driver/kernel maturity and build options.
+*   **Consumer System Variability:** Thermal throttling, background processes, and power limits cause non-deterministic performance.
+*   **Quality vs. Throughput:** Lower precision quantization (e.g., Q4) may reduce memory footprint but alter output quality; throughput gains are not always linear.
+*   **Survivorship Bias:** Analyzing only successful runs hides failures on resource-constrained hardware (e.g., context length too large for VRAM).
+*   **Sampling Variability:** Deterministic settings may not reflect interactive usage; generated token counts can fluctuate with sampling parameters.
+*   **Metric Interpretation:** GPU utilization samples are device-level indicators, not direct kernel efficiency measurements; CPU core counts matter less than memory speed/channel config for quantized models.
+
+### 4. Reproducibility Implications
+To ensure experiments can be replicated and audited, the framework enforces strict metadata and artifact management.
+*   **Determinism:** Prompts must be versioned (via file path or hash) and decoding settings (temperature, sampling) must be fixed unless intentionally variable.
+*   **Configuration Tracking:** Every run must record the resolved model path, binary path, specific driver versions, and OS environment.
+*   **Failure Handling:** Failed runs (missing files, OOM, driver errors) must be recorded with metadata, preventing the exclusion of edge cases from analysis.
+*   **Auditability:** The separation of raw logs, metadata, and parsed CSVs allows researchers to trace any result back to the exact command line, hardware snapshot, and parser rule used.
+*   **Hardware Labeling:** Labels should be human-readable (e.g., `gpu/rtx2060-12gb`) but must be supplemented with full system metadata (CPU model, RAM capacity, driver version) to avoid ambiguity.
+*   **Automation:** The orchestration should remain simple (shell scripts + Python) to avoid dependencies that hinder reproduction on older or different machines.
+
+[ Prompt: 1847.9 t/s | Generation: 78.0 t/s ]
+
+
+Exiting...

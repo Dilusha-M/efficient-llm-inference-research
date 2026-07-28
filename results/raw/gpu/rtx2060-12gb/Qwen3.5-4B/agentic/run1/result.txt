@@ -1,0 +1,230 @@
+Input prompt
+
+You are simulating a senior coding-agent design review without external tools, internet access, shell commands, package installation, or file-system inspection. Work only from the specification and artifacts below. Be concrete enough that another engineer could implement and test the design.
+
+Project:
+A research project needs a command-line llama.cpp benchmark runner supporting CPU, CUDA, and Vulkan; model aliases from a configuration file; fixed workload prompts; performance output; hardware metadata; resource monitoring; and one metadata file per run. Raw output must remain available for manual audit. The runner must distinguish a failed model run from missing optional monitoring data.
+
+Existing constraints:
+* Each condition is repeated three times and compared manually using each run's `response.txt`/raw response plus metrics.
+* The default context is 4096, generation limit 256, temperature 0.7, and CPU thread count 1; a workload may override context explicitly.
+* Workloads are `chat`, `batch`, `coding`, `summarization`, `agentic`, and `world_knowledge`.
+* The runner must not mix results if model file, backend, hardware label, context, generation limit, prompt, temperature, GPU layers, build, or driver environment changes.
+* Monitors may be unavailable or sampled sparsely. A model process may fail after creating partial output.
+
+Required deliverables:
+1. Requirements and invariants: list inputs, artifacts, success/failure states, and the experimental identity tuple. Identify at least one ambiguity that must be resolved before implementation.
+2. State-machine workflow: describe the lifecycle from validation through launch, monitoring, process exit, and finalization, including what happens on timeout, OOM, malformed performance output, and monitor failure.
+3. Auditable design: propose shell/Python component boundaries, a metadata schema, atomic-write or partial-file conventions, and how to preserve stdout/stderr and the exact prompt used.
+4. Analysis integrity: explain how to prevent a failed run or variable generated-token count from producing a misleading throughput comparison, and how a parser should treat unknown llama.cpp output formats.
+5. Test plan: provide at least six tests, including one simulated backend failure, one missing monitor, one prompt containing spaces/newlines, one partial output, and one changed prompt hash.
+6. Pre-merge review: name the three highest-risk design flaws in your proposal and the concrete changes that would fix them.
+
+Use these exact headings: Requirements and Invariants; State Machine; Auditable Design; Analysis Integrity; Test Plan; Pre-merge Review. Keep the design implementation-oriented and avoid claiming that a metric is available if the specification does not guarantee it.
+
+Final model response
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b10110-8f5ab832c
+model      : /home/dilusha/llm-research/models/Qwen/Qwen3.5-4B-GGUF/Qwen3.5-4B-Q4_K_M.gguf
+ftype      : Q4_K - Medium
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> You are simulating a senior coding-agent design review without external tools, internet access, shell commands, package installation, or file-system inspection. Work only from the specification and artifacts below. Be concrete enough that another engineer could implement and test the design.
+
+Project:
+A research project needs a command-line llama.cpp benchmark runner supporting CPU, CUDA, and Vulkan; model aliases from a configuration file; fixed workload prompts; performance output; hardware me ... (truncated)
+# Requirements and Invariants
+
+### Inputs and Artifacts
+**Inputs:**
+*   **Configuration:** A JSON/YAML file defining model aliases (path, backend, default GPU layers), workload definitions (prompt, generation limit, temperature, optional context override), and optional monitor endpoints.
+*   **Environment:** `LLAMA_CPP_PATH`, `CUDA_VISIBLE_DEVICES` (or equivalent), and hardware driver versions.
+*   **State:** An immutable "Experimental Identity" tuple composed of:
+    *   `model_path` (exact string)
+    *   `backend` (CPU/CUDA/Vulkan)
+    *   `hardware_label` (e.g., `NVIDIA_A100`, `Intel_i9` derived from `/proc/cpuinfo` or `nvidia-smi`)
+    *   `context_size` (default 4096, or workload override)
+    *   `gen_limit` (default 256)
+    *   `temperature` (default 0.7)
+    *   `prompt_hash` (SHA-256 of the canonicalized prompt)
+    *   `build_version` (commit hash or binary version string)
+    *   `driver_env` (stringified environment variables affecting the backend)
+
+**Artifacts:**
+*   `run_XXXXX.json`: Atomic metadata file containing the Identity tuple, raw stdout/stderr, and parsed metrics.
+*   `response.txt`: The raw model generation output.
+*   `metrics.json`: Parsed performance data (tokens/sec, wall time, memory usage).
+*   `monitor_data.json`: Sparse or empty if the monitor failed or was unavailable.
+
+### Success and Failure States
+*   **Success:** The process exits with code 0 (or expected non-zero for specific workload logic) and produces `response.txt` with non-zero length.
+*   **Partial Success:** `response.txt` is generated but truncated (e.g., killed by OOM or timeout). Metrics may be incomplete.
+*   **Failure:** The process exits with non-zero code due to initialization failure, model load error, or runtime crash.
+
+### Ambiguity Resolution Requirement
+*   **Ambiguity:** The specification states "A model process may fail after creating partial output." It does not explicitly define the exit code semantics for a "partial but functional" run versus a "corrupted" run.
+*   **Resolution:** The design must enforce that **any** `response.txt` with content > 0 bytes is treated as a valid run for throughput calculation, regardless of the process exit code (unless the exit code is explicitly `2` or `128`, indicating a hard failure before generation started). Exit codes must be normalized: 0, 1, and 2 map to "Partial Success"; 3+ and 128+ map to "Failure". The prompt hash must be computed on the *input* prompt before the process starts, not the output.
+
+# State Machine
+
+The workflow follows a strict linear progression with defined handling for exceptional events.
+
+1.  **Validation Phase:**
+    *   Parse configuration and resolve model alias.
+    *   Compute `prompt_hash` and canonicalize prompt.
+    *   Check hardware availability (e.g., verify CUDA context if backend is CUDA).
+    *   *Transition:* If validation fails (missing file, invalid backend), **Abort**. Generate `run_XXXXX.json` with `status: "fail", error: "validation_error"`.
+
+2.  **Launch Phase:**
+    *   Fork process with isolated environment (set `LLAMA_CONTEXT`, `LLAMA_N_THREADS`, etc.).
+    *   Redirect stdout/stderr to pipes for immediate capture.
+    *   *Transition:* If fork fails or `llama-cli` binary missing, **Abort**.
+
+3.  **Monitoring & Execution Phase:**
+    *   Monitor process PID for termination.
+    *   **Timeout Event:** If `wall_time > timeout_threshold`:
+        *   Kill process.
+        *   Capture partial `response.txt`.
+        *   Record `status: "timeout"`.
+    *   **OOM Event:** If monitor reports memory exhaustion:
+        *   Kill process.
+        *   Capture partial `response.txt`.
+        *   Record `status: "oom"`.
+    *   **Normal Exit:** Process terminates.
+        *   Check exit code.
+        *   If exit code $\in$ [0, 2]: `status: "partial_success"`.
+        *   If exit code $\ge$ 3 or $\ge$ 128: `status: "fail"`.
+    *   **Monitor Failure:** If the monitor process dies or returns empty data:
+        *   **Crucial Logic:** Do **not** abort the main runner. The runner distinguishes between a failed *model run* and missing *optional monitoring data*. If monitor fails, `monitor_data.json` will be `{}` or contain only the last valid sample. The main run proceeds to finalization.
+
+4.  **Finalization Phase:**
+    *   Parse `response.txt` to count tokens (handle unknown formats by attempting regex extraction of `[n][N]` tokens or byte count estimation).
+    *   Merge metrics with monitor data (if available).
+    *   Write artifacts atomically.
+    *   *Transition:* **Complete**.
+
+# Auditable Design
+
+### Component Boundaries
+*   **Runner (Shell/Bash):** Handles orchestration, environment isolation, PID management, and atomic file writing. It acts as the "glue" ensuring no two runs mix results.
+*   **Parser (Python):** Separate process responsible for parsing `llama-cli` stdout/stderr (LLM format: `{"n": N, "t": T}`) and generating metrics. It has no access to the raw model binary.
+*   **Monitor Agent (Optional):** A side process (e.g., using `nvidia-smi` polling or a local prometheus exporter) that pushes data to a socket or API. It is decoupled so its failure does not kill the Runner.
+
+### Metadata Schema (`run_XXXXX.json`)
+```json
+{
+  "run_id": "uuid-v4",
+  "status": "partial_success",
+  "identity": {
+    "model_path": "...",
+    "backend": "cuda",
+    "hardware_label": "A100",
+    "context_size": 4096,
+    "gen_limit": 256,
+    "temperature": 0.7,
+    "prompt_hash": "sha256_hash",
+    "build_version": "v0.0.1",
+    "driver_env": "CUDA_VERSION=12.1..."
+  },
+  "metrics": {
+    "tokens_per_second": 150.23,
+    "total_tokens": 250,
+    "wall_time_seconds": 1.67,
+    "memory_peak_mb": 4096
+  },
+  "monitor_data": {
+    "available": true,
+    "samples": [
+      {"time": 0.5, "mem_mb": 4000}
+    ]
+  },
+  "raw_logs": {
+    "stdout": "...\n",
+    "stderr": "..."
+  },
+  "response_path": "response.txt"
+}
+```
+
+### Atomic-Write Conventions
+*   All output files (`run_XXXXX.json`, `response.txt`) must be written to a temporary location (`run_XXXXX.tmp`) first.
+*   Renamed to final name only after successful parsing and validation of the temporary file.
+*   **Stdout/Stderr Preservation:** The runner captures raw pipes directly. If `llama-cli` prints debug info, it is preserved in `raw_logs` exactly as emitted, preventing filtering from obscuring errors.
+
+# Analysis Integrity
+
+### Preventing Misleading Comparisons
+*   **Variable Token Count Handling:** Throughput ($TPS$) = $Total Tokens / Wall Time$. If a run fails partway ($TPS$ is low) but generates *any* tokens, it is flagged as `status: "partial_success"`.
+*   **Comparison Logic:** Two runs are only comparable if:
+    1.  `status` is identical (both `partial_success` or both `fail`).
+    2.  `prompt_hash` matches exactly.
+    3.  `identity` tuple matches exactly.
+    *   If `status` differs (e.g., Run A: `timeout` with 100 tokens vs Run B: `success` with 256 tokens), Run A is excluded from TPS calculation or marked as "invalid comparison" to prevent bias.
+
+### Handling Unknown Output Formats
+*   **Parser Strategy:** The Python parser will attempt to parse the standard `llama.cpp` JSON format (`{"n": N, "t": T}`).
+*   **Fallback:** If parsing fails (e.g., custom backend output, corrupted stream):
+    *   Fall back to byte-count estimation: `Total Tokens = ceil(Byte_Count / 4)`.
+    *   Log a warning in `stderr` but do not abort the run, as the requirement states raw output must remain available for manual audit.
+    *   Set `metrics.tokens_per_second` to `null` or `0` in the JSON to indicate the metric is unreliable, while keeping `wall_time` valid.
+
+# Test Plan
+
+1.  **Simulated Backend Failure:**
+    *   **Setup:** Configure runner to use a non-existent model path or inject a SIGTERM into the `llama-cli` process after 50 tokens.
+    *   **Expectation:** `run_XXXXX.json` reports `status: "partial_success"` (due to the 50 tokens generated) but `metrics.tokens_per_second` is low. `response.txt` contains partial text. No crash in the runner.
+
+2.  **Missing Monitor:**
+    *   **Setup:** Disable the monitor agent entirely or provide it with an unreachable endpoint.
+    *   **Expectation:** `monitor_data` in the JSON is `{}` or `null`. The runner completes successfully. `run_XXXXX.json` includes a field `monitor_failure_reason` explaining the missing data.
+
+3.  **Prompt with Spaces/Newlines:**
+    *   **Setup:** Use a prompt containing literal newlines (`\n`) and spaces.
+    *   **Expectation:** `prompt_hash` must change compared to the same prompt with whitespace stripped. `response.txt` must preserve the input structure. The runner must correctly canonicalize the prompt for hashing before execution.
+
+4.  **Partial Output (Truncation):**
+    *   **Setup:** Kill the process exactly when it outputs the last JSON object of a sequence (or mid-stream).
+    *   **Expectation:** `response.txt` ends abruptly. The parser detects the incomplete token count and sets `metrics.tokens_per_second` to `null` or calculates based on available bytes, flagging the run as `status: "partial_success"`.
+
+5.  **Changed Prompt Hash:**
+    *   **Setup:** Run the exact same model and backend, but modify the prompt from "Hello" to "Hello World".
+    *   **Expectation:** The `prompt_hash` field in `run_XXXXX.json` must differ. The `response.txt` must differ. The runner must *not* merge the results of these two runs; they must be treated as distinct experiments.
+
+6.  **Malformed Performance Output:**
+    *   **Setup:** Configure a hypothetical backend that outputs `{"n": 5, "t": abc}` (non-numeric tokens) or missing fields.
+    *   **Expectation:** The Python parser catches the exception, logs a warning to `stderr`, writes `metrics` with `null` for the token count, but still generates the `run_XXXXX.json` file so the failure mode is auditable.
+
+# Pre-merge Review
+
+### High-Risk Design Flaws and Fixes
+
+1.  **Flaw: Blind Trust in Process Exit Code**
+    *   **Risk:** Relying solely on the `llama-cli` exit code (0 vs non-zero) to determine success can lead to "false failures" (e.g., the model runs successfully but the driver reports a generic error code that `llama-cli` interprets as failure, even though tokens were generated).
+    *   **Fix:** Implement the logic defined in the State Machine: **Any** process exit where `response.txt` > 0 bytes is treated as `partial_success`. The exit code is used only to categorize severity, not to gate the entire run's validity.
+
+2.  **Flaw: Atomic Writes with Concurrent Access**
+    *   **Risk:** If the runner is invoked multiple times in a loop without a lock or unique `run_id` generation, the final `run_XXXXX.json` could be a mix of two runs' data (e.g., Run 1 writes metadata, Run 2 overwrites the temp file before Rename).
+    *   **Fix:** Enforce strict `UUID` generation at the start of the script. Use `flock` (file locking) on the metadata directory or ensure the temporary file is only renamed to the final path after the process exits and the parser confirms the temp file is valid.
+
+3.  **Flaw: Monitor Dependency for Core Metrics**
+    *   **Risk:** If the monitor is required to calculate `tokens_per_second` (e.g., if `llama-cli` doesn't report it), a monitor failure will cause the entire run to be marked as "failed" and excluded from analysis, hiding the actual model performance.
+    *   **Fix:** Decouple the runner from the monitor. The runner calculates `tokens_per_second` using `total_tokens / wall_time` locally. The monitor is an optional data source. If the monitor fails, the core metrics remain valid, and only the `monitor_data` field is populated with empty/error data.
