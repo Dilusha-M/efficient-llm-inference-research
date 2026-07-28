@@ -1,0 +1,244 @@
+Input prompt
+
+You are simulating a senior coding-agent design review without external tools, internet access, shell commands, package installation, or file-system inspection. Work only from the specification and artifacts below. Be concrete enough that another engineer could implement and test the design.
+
+Project:
+A research project needs a command-line llama.cpp benchmark runner supporting CPU, CUDA, and Vulkan; model aliases from a configuration file; fixed workload prompts; performance output; hardware metadata; resource monitoring; and one metadata file per run. Raw output must remain available for manual audit. The runner must distinguish a failed model run from missing optional monitoring data.
+
+Existing constraints:
+* Each condition is repeated three times and compared manually using each run's `response.txt`/raw response plus metrics.
+* The default context is 4096, generation limit 256, temperature 0.7, and CPU thread count 1; a workload may override context explicitly.
+* Workloads are `chat`, `batch`, `coding`, `summarization`, `agentic`, and `world_knowledge`.
+* The runner must not mix results if model file, backend, hardware label, context, generation limit, prompt, temperature, GPU layers, build, or driver environment changes.
+* Monitors may be unavailable or sampled sparsely. A model process may fail after creating partial output.
+
+Required deliverables:
+1. Requirements and invariants: list inputs, artifacts, success/failure states, and the experimental identity tuple. Identify at least one ambiguity that must be resolved before implementation.
+2. State-machine workflow: describe the lifecycle from validation through launch, monitoring, process exit, and finalization, including what happens on timeout, OOM, malformed performance output, and monitor failure.
+3. Auditable design: propose shell/Python component boundaries, a metadata schema, atomic-write or partial-file conventions, and how to preserve stdout/stderr and the exact prompt used.
+4. Analysis integrity: explain how to prevent a failed run or variable generated-token count from producing a misleading throughput comparison, and how a parser should treat unknown llama.cpp output formats.
+5. Test plan: provide at least six tests, including one simulated backend failure, one missing monitor, one prompt containing spaces/newlines, one partial output, and one changed prompt hash.
+6. Pre-merge review: name the three highest-risk design flaws in your proposal and the concrete changes that would fix them.
+
+Use these exact headings: Requirements and Invariants; State Machine; Auditable Design; Analysis Integrity; Test Plan; Pre-merge Review. Keep the design implementation-oriented and avoid claiming that a metric is available if the specification does not guarantee it.
+
+Final model response
+
+warning: no usable GPU found, --gpu-layers option will be ignored
+warning: one possible reason is that llama.cpp was compiled without GPU support
+warning: consult docs/build.md for compilation instructions
+
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b10110-8f5ab832c
+model      : /home/dilusha/llm-research/models/Qwen/Qwen3.5-9B-GGUF/Qwen3.5-9B-Q4_K_M.gguf
+ftype      : Q4_K - Medium
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> You are simulating a senior coding-agent design review without external tools, internet access, shell commands, package installation, or file-system inspection. Work only from the specification and artifacts below. Be concrete enough that another engineer could implement and test the design.
+
+Project:
+A research project needs a command-line llama.cpp benchmark runner supporting CPU, CUDA, and Vulkan; model aliases from a configuration file; fixed workload prompts; performance output; hardware me ... (truncated)
+# Requirements and Invariants
+
+### Inputs
+*   **Model Path**: Absolute path to the GGUF file.
+*   **Backend**: String enum (`CPU`, `CUDA`, `Vulkan`).
+*   **Hardware Label**: String identifier for the GPU/CPU (e.g., `NVIDIA_A100`, `Apple_M1` or `Generic_CPU`).
+*   **Configuration**: JSON/YAML file containing:
+    *   `model_aliases`: Map of logical names to model paths.
+    *   `workload_configs`: Definitions for `chat`, `batch`, `coding`, `summarization`, `agentic`, `world_knowledge` including fixed prompts and override context sizes.
+    *   `monitoring`: List of optional system metrics (e.g., `gpu_memory`, `cpu_util`) and their sampling rates.
+*   **Global Defaults**: Context `4096`, Gen Limit `256`, Temp `0.7`, CPU Threads `1` (unless workload overrides context).
+
+### Artifacts
+*   `response.txt`: Raw text output generated by the model.
+*   `metrics.json`: JSON object containing performance stats (tokens/s, latency) and optional monitoring data.
+*   `run_metadata.json`: Immutable log containing:
+    *   `experimental_id`: Unique tuple (Model Path, Backend, Hardware Label, Context, Gen Limit, Prompt Hash, Temp, GPU Layers, Build Hash, Driver Env Hash).
+    *   `prompt_raw`: The exact prompt string used.
+    *   `timestamp`: ISO 8601 run start time.
+    *   `status`: `SUCCESS`, `TIMEOUT`, `OOM`, `PARSING_ERROR`, `MONITOR_FAILURE`.
+    *   `error_message`: Human-readable description of failure (if any).
+
+### Success/Failure States
+*   **SUCCESS**: Model generated tokens and exited normally. Metrics parsed.
+*   **TIMEOUT**: Process exceeded execution limit before completion.
+*   **OOM**: Process terminated due to Out-Of-Memory.
+*   **PARSING_ERROR**: `metrics.json` could not be extracted from stdout/stderr (unknown format or malformed).
+*   **MONITOR_FAILURE**: Model run was successful, but optional monitoring data could not be collected.
+*   **MODEL_FAILURE**: Model process crashed or produced no output.
+
+### Experimental Identity Tuple
+A run is distinct only if **all** of the following change. If any one remains constant while others change, results cannot be mixed. The tuple is:
+`(Model_File_Path, Backend_Type, Hardware_Label, Context_Size, Generation_Limit, Prompt_Hash, Temperature, GPU_Layers, Build_Hash, Driver_Env_Hash)`.
+
+### Ambiguity Resolution
+**Ambiguity**: The specification states "Monitors may be unavailable or sampled sparsely." It does not define how a sparse sample affects the calculation of average tokens-per-second (TPS) if the monitor reports only snapshots rather than a stream.
+**Resolution**: The design must treat monitoring data as **observational only** for resource profiling, not as the source of truth for throughput. Throughput must be calculated strictly from token counters provided by llama.cpp in its performance output. If the monitor provides sparse snapshots, TPS calculation is skipped or marked as `NULL` in `metrics.json`, and the `MONITOR_FAILURE` flag is set if the *entire* monitoring stream is missing, distinguishing it from a successful run with sparse data.
+
+---
+
+# State Machine
+
+The lifecycle follows a linear flow with specific exit branches based on termination signals.
+
+1.  **Initialization**:
+    *   Load config, resolve model alias to path.
+    *   Calculate `Prompt_Hash` (SHA-256) and `Build_Hash`/`Driver_Hash` from environment.
+    *   Construct `experimental_id`.
+    *   Create temporary atomic directory for artifacts.
+
+2.  **Validation**:
+    *   Check model file existence and readability.
+    *   Validate prompt string (escape handling).
+    *   *Branch*: If invalid -> `PARSING_ERROR` or `MODEL_FAILURE` immediately.
+
+3.  **Launch**:
+    *   Spawn llama.cpp process with arguments constructed from defaults + workload overrides.
+    *   Redirect stdout/stderr to a temporary pipe or file descriptor.
+    *   Start background monitoring threads/processes (if configured).
+
+4.  **Monitoring Loop** (Concurrent):
+    *   Attempt to read metric streams.
+    *   *Branch*: If monitor socket/file unavailable -> Ignore individual samples, do not abort main run. If *all* monitors fail after timeout -> Mark `MONITOR_FAILURE` in metadata.
+
+5.  **Process Exit**:
+    *   Capture Exit Code ($EC$).
+    *   Capture Raw Output ($Out$).
+
+6.  **Finalization**:
+    *   **Case $EC == 0$**:
+        *   Attempt to parse performance metrics from $Out$.
+        *   *Sub-Case*: If metrics found -> Extract TPS, Latency.
+        *   *Sub-Case*: If metrics missing/malformed -> Set status `PARSING_ERROR`.
+        *   Merge optional monitoring data.
+        *   Write `response.txt`, `metrics.json`, `run_metadata.json` atomically.
+        *   *Result*: `SUCCESS` (or `MONITOR_FAILURE` if no metrics but process ok).
+    *   **Case $EC \neq 0$**:
+        *   Check if $Out$ contains "timeout", "oom", or crash signature.
+        *   Set status `TIMEOUT`, `OOM`, or `MODEL_FAILURE`.
+        *   Extract partial tokens from $Out$ if available.
+        *   Write artifacts with `status` reflecting the error.
+
+---
+
+# Auditable Design
+
+### Component Boundaries
+*   **Orchestrator (Python)**: Handles config loading, argument parsing, process spawning (`subprocess`), atomic file writing, and schema validation. Pure logic, no external deps beyond stdlib.
+*   **Monitor Adaptor (Python)**: A lightweight module that attempts to read from specific system paths (e.g., `/proc`, nvidia-smi JSON output). If a command fails or path is missing, it returns `None` rather than crashing.
+*   **Parser (Python)**: Regex-based or line-iterator logic to extract `prompt_eval_count`, `prompt_eval_time`, `eval_count`, `eval_time` from stdout. Does not assume JSON output from llama.cpp.
+
+### Metadata Schema (`run_metadata.json`)
+```json
+{
+  "experimental_id": {
+    "model_path": "/path/to/model.gguf",
+    "backend": "CUDA",
+    "hardware_label": "NVIDIA_A100",
+    "context": 4096,
+    "generation_limit": 256,
+    "prompt_hash": "abc123...",
+    "temperature": 0.7,
+    "gpu_layers": 32,
+    "build_hash": "sha256_of_binary",
+    "driver_env_hash": "sha256_of_driver_info"
+  },
+  "workload": "chat",
+  "timestamp": "2023-10-27T10:00:00Z",
+  "status": "SUCCESS",
+  "error_message": null,
+  "monitoring_status": "COMPLETE",
+  "artifacts": {
+    "response_file": "response.txt",
+    "metrics_file": "metrics.json"
+  }
+}
+```
+
+### Atomic-Write and Partial-File Conventions
+*   **Atomic Writes**: All output files (`response.txt`, `metrics.json`, `run_metadata.json`) are written to a `.tmp` file in the artifact directory and then renamed (mv) only after successful completion. On crash, the `.tmp` files are left behind for inspection, but the final atomic view remains clean.
+*   **Partial Output Preservation**: `response.txt` is always written in append-only mode or via a single write of the complete stdout buffer if < 10MB, ensuring the raw stream is captured exactly as emitted, even if the model crashes mid-generation.
+*   **Stdout/Stderr Preservation**: The raw stdout is parsed for metrics, but the *entire* buffer is also saved to `response.txt`. `metrics.json` contains only the extracted numeric data, never the raw stream, to prevent pollution.
+
+### Exact Prompt Preservation
+The prompt string is stored verbatim in `run_metadata.json` under `experimental_id.prompt_raw` (escaped for JSON) and echoed to `response.txt` as the first line of input context if the runner supports it, or appended as a header comment if the model output doesn't include it.
+
+---
+
+# Analysis Integrity
+
+### Preventing Misleading Throughput Comparisons
+1.  **Token Count Filtering**: The parser must strictly look for the specific token count metric provided by llama.cpp (e.g., `eval_count` or `prompt_eval_count`). If the process crashes and outputs `0` tokens or a partial count (e.g., `5` tokens), the TPS calculation must be suppressed or marked as `NULL` in `metrics.json` until the run is marked `SUCCESS`.
+2.  **Failure Flagging**: Any run with status `TIMEOUT`, `OOM`, `MODEL_FAILURE`, or `PARSING_ERROR` is explicitly excluded from throughput averages. The `run_metadata.json` status field acts as the primary filter.
+3.  **Variable Context Handling**: Since context size can override defaults, the `experimental_id` includes `context`. A run with 8192 context generating 256 tokens is distinct from a run with 4096 context generating 256 tokens; they will never be averaged together because their `context` ID component differs.
+
+### Handling Unknown Output Formats
+*   **Heuristic Parser**: The parser will look for standard llama.cpp performance lines (e.g., `eval_time`, `eval_count`). If these exact strings are missing, the parser assumes an unknown format or a version mismatch.
+*   **Fail-Close**: If the parser cannot find the metrics, it writes `null` for TPS fields in `metrics.json` and sets the main status to `PARSING_ERROR`. It does **not** guess or interpolate values. The raw output in `response.txt` allows manual audit to determine if the format changed or if the model is misconfigured.
+
+---
+
+# Test Plan
+
+1.  **Test: Standard Chat Workload (Happy Path)**
+    *   *Input*: Model `test-q4.gguf`, Backend `CPU`, Workload `chat`, Prompt "Hello".
+    *   *Expected*: `response.txt` contains "Hello...", `metrics.json` has valid TPS, `status` is `SUCCESS`.
+
+2.  **Test: Simulated Backend Failure (Timeout)**
+    *   *Input*: Spawn llama.cpp with a modified environment or wrapper that forces an exit code of 137 (OOM) or 124 (Timeout).
+    *   *Expected*: `response.txt` contains partial generation, `status` is `TIMEOUT` or `OOM`, `metrics.json` has `tokens_per_sec: null`.
+
+3.  **Test: Missing Monitor**
+    *   *Input*: Configure `monitoring` to request `gpu_memory`, but ensure the system has no GPU or the monitor binary is removed.
+    *   *Expected*: Model runs successfully, `response.txt` is complete, `status` is `SUCCESS`, but `monitoring_status` in metadata is `MISSING` (distinct from `MONITOR_FAILURE` which implies run failure).
+
+4.  **Test: Prompt Containing Spaces and Newlines**
+    *   *Input*: Prompt string: "Question: What is the meaning of life?\n\nContext: ..."
+    *   *Expected*: `response.txt` starts with the prompt intact. `run_metadata.json` contains the exact escaped string. `Prompt_Hash` matches the input string exactly.
+
+5.  **Test: Partial Output (Crash Mid-Generation)**
+    *   *Input*: Model configured to generate 1000 tokens, but system limit is set to crash at token 500 (or use a model that segfaults).
+    *   *Expected*: `response.txt` has truncated text. `metrics.json` shows partial token count. `status` is `MODEL_FAILURE`. Throughput is not calculated.
+
+6.  **Test: Changed Prompt Hash (Identity Distinction)**
+    *   *Input*: Run A with Prompt "A", Run B with Prompt "B". Both use same model/backend/context.
+    *   *Expected*: `experimental_id` for Run A and Run B differs only in `prompt_hash`. When merged into a report, they are treated as separate experiments, preventing bias from one prompt type skewing the other.
+
+---
+
+# Pre-merge Review
+
+### Highest-Risk Design Flaw 1: Conflating Parsing Errors with Model Failures
+*   **Risk**: If llama.cpp outputs a non-standard JSON or text format for metrics (e.g., a new version changes the stdout prefix), the parser will fail to extract tokens. The current design might mark this as `PARSING_ERROR` but not clearly distinguish it from a model crash that happened to output garbage text. This could hide a real regression in the model or backend.
+*   **Fix**: Implement a strict "Format Check" phase. If metrics are missing, write the full stdout to `response.txt` (already planned) but add a specific flag `metric_format_version` to metadata. If the format is unknown, log a warning and treat TPS as `null` without changing the `status` to `MODEL_FAILURE` unless the exit code is non-zero. This separates "Model didn't work" from "We didn't understand the report".
+
+### Highest-Risk Design Flaw 2: Atomic Write Race Conditions in High-Throughput Scenarios
+*   **Risk**: If the runner is invoked concurrently (e.g., testing multiple models in parallel), the `mv` (rename) operation for `response.txt` assumes exclusive access. If the underlying filesystem is network-mounted (NFS) or has latency issues, the rename might fail or overwrite a previous run's file if the atomic directory isn't strictly isolated per run ID.
+*   **Fix**: Ensure every run writes to a unique subdirectory based on `experimental_id` (e.g., `/artifacts/{id}/response.txt`) rather than a shared base directory. This guarantees isolation. Additionally, use `os.replace()` (atomic on POSIX) only after the temporary file is fully flushed and synced to disk (`fsync()`).
+
+### Highest-Risk Design Flaw 3: Ambiguity in "Sparse" vs "Missing" Monitor Data
+*   **Risk**: The requirement states monitors "may be unavailable or sampled sparsely." The design currently treats `MONITOR_FAILURE` as a specific status. If a monitor only provides data every 5 seconds but the run takes 10 minutes, we have sparse data. However, if the monitor dies halfway, is it sparse or failure? Mixing these states makes analysis integrity impossible (is the CPU spike real or just a missing sample?).
+*   **Fix**: Redefine the metadata schema to separate **Data Availability** from **Run Status**.
+    *   `status`: Only `SUCCESS`, `TIMEOUT`, `OOM`, `MODEL_FAILURE`.
+    *   `monitoring_status`: Enum `COMPLETE` (all expected samples received), `SPARSE` (some samples missing, TPS calculated from model metrics only), `MISSING` (no samples available).
+    *   `metrics.json` will always contain the model-derived TPS. The `monitoring_status` will inform the user if resource profiling is reliable, without invalidating the model performance comparison.

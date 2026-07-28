@@ -10,7 +10,7 @@ BASE="$HOME/llm-research"
 
 BACKEND="cpu"
 HARDWARE="ryzen5600"
-MODEL="QWEN35_4B"
+MODEL="QWEN35_9B"
 RUNS=3
 
 

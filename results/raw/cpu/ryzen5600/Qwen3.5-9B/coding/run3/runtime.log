@@ -1,0 +1,269 @@
+warning: no usable GPU found, --gpu-layers option will be ignored
+warning: one possible reason is that llama.cpp was compiled without GPU support
+warning: consult docs/build.md for compilation instructions
+
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b10110-8f5ab832c
+model      : /home/dilusha/llm-research/models/Qwen/Qwen3.5-9B-GGUF/Qwen3.5-9B-Q4_K_M.gguf
+ftype      : Q4_K - Medium
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> You are reviewing production-quality Python for an inference benchmark. Implement the function below in Python using only the standard library.
+
+Task:
+Implement `summarize_decode_speeds(lines)` where `lines` is an iterable of strings. Return a dictionary with exactly these keys:
+
+* `count`: number of valid decode records
+* `min_tps`: minimum valid tps, or `None` when there are no valid records
+* `max_tps`: maximum valid tps, or `None` when there are no valid records
+* `avg_tps`: arithmetic mean  ... (truncated)
+```python
+"""
+Production-quality implementation for summarizing decode speeds from log lines.
+
+This module implements `summarize_decode_speeds` to parse a stream of log lines
+and compute statistical summaries (count, min, max, avg) for valid decode events.
+"""
+
+from typing import Iterable, Dict, Any, Optional
+import math
+
+
+def summarize_decode_speeds(lines: Iterable[str]) -> Dict[str, Any]:
+    """
+    Summarize decode speeds from an iterable of log lines.
+
+    A line is considered a valid decode record if:
+    1. It contains an event field equal to 'decode'.
+    2. It contains a tps field with a value.
+    3. The tps value is a finite, strictly positive number.
+    4. There are no duplicate keys with conflicting values or malformed duplicates.
+
+    Args:
+        lines: An iterable of strings representing log lines.
+
+    Returns:
+        A dictionary with keys:
+        - 'count': Number of valid decode records.
+        - 'min_tps': Minimum valid tps, or None if no valid records.
+        - 'max_tps': Maximum valid tps, or None if no valid records.
+        - 'avg_tps': Arithmetic mean rounded to 3 decimal places, or None if no valid records.
+    """
+    
+    # State variables for a one-pass algorithm
+    count = 0
+    min_tps: Optional[float] = None
+    max_tps: Optional[float] = None
+    sum_tps = 0.0
+    
+    # We need to track keys to detect duplicates within a single line
+    # Since we process line by line, we can reconstruct the key-value map for each line.
+    
+    for line in lines:
+        # Safety check: ignore non-string items if they somehow slip through (though type hint suggests str)
+        if not isinstance(line, str):
+            continue
+
+        # Split line on whitespace. This handles spaces, tabs, newlines automatically.
+        tokens = line.split()
+        
+        # We need to parse key=value pairs.
+        # Naive substring matching (e.g., checking if 'decode' is in the line) is dangerous
+        # because it might match 'encode', 'decoded', or 'decode_time'. 
+        # Similarly, it fails to detect duplicate keys like 'tps=10' and 'tps=20' on the same line
+        # unless we explicitly track the keys found in that specific line.
+        
+        # Dictionary to hold key-value pairs for the current line to detect duplicates
+        line_fields: Dict[str, Any] = {}
+        
+        # First pass: extract all key-value pairs and detect duplicates
+        for token in tokens:
+            if '=' not in token:
+                continue
+            
+            # Split on the first '=' only in case value contains '=' (though unlikely in simple logs, 
+            # robust parsing suggests split on first occurrence)
+            idx = token.index('=')
+            key = token[:idx]
+            val_str = token[idx+1:]
+            
+            # Normalize key to handle case sensitivity if needed, but spec implies exact match usually.
+            # Assuming case-sensitive keys based on 'event=decode'.
+            
+            if key in line_fields:
+                # Duplicate key found on the same line.
+                # Spec: "Treat a duplicate tps key with the same value as malformed too."
+                # This implies ANY duplicate key makes the line malformed.
+                # Therefore, we mark this line as invalid and skip accumulation.
+                line_is_valid = False
+                break
+            else:
+                line_fields[key] = val_str
+        else:
+            # The loop completed without breaking (no duplicate keys)
+            line_is_valid = True
+
+        if not line_is_valid:
+            continue
+
+        # Second pass: validate required fields and values
+        # Check for required 'event=decode'
+        event_val = line_fields.get('event')
+        if event_val != 'decode':
+            continue
+            
+        # Check for 'tps' field
+        tps_str = line_fields.get('tps')
+        if tps_str is None:
+            continue
+        
+        # Parse float
+        try:
+            tps = float(tps_str)
+        except ValueError:
+            continue
+            
+        # Validate float properties: finite, strictly positive
+        if not math.isfinite(tps):
+            continue
+        if tps <= 0:
+            continue
+            
+        # If we passed all checks, it's a valid record
+        count += 1
+        sum_tps += tps
+        
+        # Update min/max
+        if min_tps is None or tps < min_tps:
+            min_tps = tps
+        if max_tps is None or tps > max_tps:
+            max_tps = tps
+
+    # Compute average if count > 0
+    if count > 0:
+        avg_tps = sum_tps / count
+        # Round to 3 decimal places
+        avg_tps = round(avg_tps, 3)
+    else:
+        avg_tps = None
+
+    return {
+        'count': count,
+        'min_tps': min_tps,
+        'max_tps': max_tps,
+        'avg_tps': avg_tps
+    }
+
+
+if __name__ == "__main__":
+    # Demonstration lines covering various cases:
+    # 1. Valid record
+    # 2. Another key=value field (irrelevant context)
+    # 3. Non-decode event
+    # 4. Malformed float (text instead of number)
+    # 5. NaN value
+    # 6. Duplicate key
+    # 7. Non-string item (passed as arg to demonstrate robustness)
+    # 8. Valid record requiring rounding
+    
+    demo_lines = [
+        # 1. Valid record
+        "event=decode tps=50.5",
+        
+        # 2. Another key=value field (irrelevant context, no decode event)
+        "event=encode tps=100.0",
+        
+        # 3. Non-decode event
+        "event=decode tps=10.0",
+        
+        # 4. Malformed float (text instead of number)
+        "event=decode tps=invalid",
+        
+        # 5. NaN value
+        "event=decode tps=nan",
+        
+        # 6. Duplicate key (makes line malformed)
+        "event=decode tps=20.0 tps=30.0",
+        
+        # 7. Non-string item (simulated by passing a list item)
+        # We will simulate this by appending a list item to the iterable
+        # But since the function expects an iterable of strings, we'll just skip this in the literal list
+        # and handle it in the logic if we were passing a mixed iterable.
+        # To strictly follow "lines is an iterable of strings", we won't put a list item in the list.
+        # However, the function logic handles non-strings gracefully.
+        
+        # 8. Valid record requiring rounding (e.g., 50.555 -> 50.555)
+        # Let's use something that rounds down or up clearly, e.g., 50.5555 -> 50.556
+        "event=decode tps=50.5555",
+        
+        # Extra valid record to test average calculation
+        "event=decode tps=60.0",
+    ]
+    
+    # Add a non-string item to the iterable to test robustness
+    # We create a generator that yields strings and then yields a non-string
+    def mixed_iter():
+        for line in demo_lines:
+            yield line
+        yield 123  # Non-string item
+        
+    result = summarize_decode_speeds(mixed_iter())
+    
+    print("Demonstration Lines:")
+    for i, line in enumerate(demo_lines, 1):
+        print(f"{i}. {line}")
+    
+    print("\nExpected Summary Analysis:")
+    print("- Line 1: Valid (tps=50.5)")
+    print("- Line 2: Invalid (event != decode)")
+    print("- Line 3: Valid (tps=10.0)")
+    print("- Line 4: Invalid (malformed float)")
+    print("- Line 5: Invalid (nan)")
+    print("- Line 6: Invalid (duplicate key)")
+    print("- Line 7: Ignored (non-string item)")
+    print("- Line 8: Valid (tps=50.5555 -> rounded avg calculation)")
+    print("- Line 9: Valid (tps=60.0)")
+    
+    print(f"\nFinal Result: {result}")
+    
+    # Expected:
+    # Valid records: 
+    # 1. 50.5
+    # 3. 10.0
+    # 8. 50.5555
+    # 9. 60.0
+    # Count = 4
+    # Min = 10.0
+    # Max = 60.0
+    # Sum = 50.5 + 10.0 + 50.5555 + 60.0 = 171.0555
+    # Avg = 171.0555 / 4 = 42.763875 -> rounded to 3 decimals = 42.764
+    
+    assert result['count'] == 4, "Count mismatch: expected 4 valid records"
+    assert abs(result['avg_tps'] - 42.764) < 0.001, f"Avg mismatch: expected 42.764, got {result['avg_tps']}"
+    
+    print("\nAssertions passed successfully.")
+```
+
+[ Prompt: 7.1 t/s | Generation: 3.2 t/s ]
+
+
+Exiting...
