@@ -1,0 +1,146 @@
+
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b10110-8f5ab832c
+model      : /home/dilusha/llm-research/models/Gemma/gemma-4-12B-it-QAT-GGUF/gemma-4-12B-it-QAT-Q4_0.gguf
+ftype      : Q4_0
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> You are simulating a senior coding-agent design review without external tools, internet access, shell commands, package installation, or file-system inspection. Work only from the specification and artifacts below. Be concrete enough that another engineer could implement and test the design.
+
+Project:
+A research project needs a command-line llama.cpp benchmark runner supporting CPU, CUDA, and Vulkan; model aliases from a configuration file; fixed workload prompts; performance output; hardware me ... (truncated)
+### Requirements and Invariants
+
+**Inputs:**
+*   **Config File:** Model aliases (mapping to paths), default hardware labels, and global defaults (Context: 4096, Gen: 256, Temp: 0.7, Threads: 1).
+*   **Workload Definitions:** Fixed prompt strings for `chat`, `batch`, `coding`, `summarization`, `agentic`, and `world_knowledge`.
+*   **Hardware Context:** Explicit selection of CPU, CUDA, or Vulkan backends.
+
+**Artifacts:**
+*   **`response.txt`:** Raw output from `llama.cpp`.
+*   **`metadata.json`:** Per-run JSON containing the Experimental Identity Tuple, hardware metadata, resource metrics, and performance stats.
+*   **`raw_log.txt`:** Direct capture of `stdout` and `stderr`.
+
+**Success/Failure States:**
+*   **Success:** Process exits with code 0; `llama.cpp` output contains expected performance markers; `response.txt` is non-empty.
+*   **Failure:** Process exits non-zero (OOM, Segfault); `llama.cpp` fails to initialize; timeout reached.
+*   **Partial/Degraded:** Process succeeds but `response.txt` is truncated; monitoring data is missing/null.
+
+**Experimental Identity Tuple:**
+A run is unique only if the following are identical: `(Model_Path, Backend, Hardware_Label, Context_Size, Gen_Limit, Prompt_String, Temperature, GPU_Layers, Build_ID, Driver_Version)`.
+
+**Ambiguity to Resolve:**
+*   *Context Override:* The spec states "a workload may override context explicitly." It is unclear if this is a global override for a workload type (e.g., all `coding` tasks use 8192) or a per-run override. **Resolution:** The runner will prioritize a `context` field within the specific workload definition over the global default.
+
+---
+
+### State Machine
+
+1.  **Validation State:**
+    *   Validate config file syntax.
+    *   Verify model file existence.
+    *   Verify `llama.cpp` binary is executable.
+    *   *Transition:* If any fail, log error and exit.
+2.  **Initialization State:**
+    *   Resolve aliases to paths.
+    *   Construct the command-line argument string.
+    *   Generate a unique `Run_ID` (UUID or timestamp-based).
+    *   *Transition:* Proceed to Launch.
+3.  **Launch State:**
+    *   Spawn `llama.cpp` as a subprocess.
+    *   Redirect `stdout` to `raw_log.txt` and `stderr` to `raw_log.txt`.
+    *   Start resource monitoring thread/process.
+    *   *Transition:* Move to Monitoring.
+4.  **Monitoring State:**
+    *   Poll for process completion or timeout.
+    *   Capture resource metrics (CPU/GPU/Mem) at defined intervals.
+    *   *On Timeout:* Kill process, mark state as `TIMEOUT`.
+    *   *On OOM/Crash:* Capture exit code, mark state as `CRASH`.
+    *   *On Success:* Move to Finalization.
+5.  **Finalization State:**
+    *   Parse `raw_log.txt` for performance metrics (tokens/sec).
+    *   Aggregate metrics and resource logs into `metadata.json`.
+    *   Write `response.txt` from `stdout`.
+    *   *Transition:* Exit.
+
+---
+
+### Auditable Design
+
+**Component Boundaries:**
+*   **`Runner_Core` (Python):** Orchestrates the state machine, handles subprocess lifecycle, and manages file I/O.
+*   **`Monitor_Agent` (Python/Shell):** Independent process/thread that samples system stats (e.g., `nvidia-smi`, `top`) to ensure monitor failure doesn't block the runner.
+*   **`Parser_Module`:** Extracts metrics from `llama.cpp` output using regex.
+
+**Metadata Schema (JSON):**
+```json
+{
+  "run_id": "uuid",
+  "identity_tuple": { "model": "...", "backend": "...", "hw_label": "...", "ctx": 4096, "gen": 256, "prompt": "...", "temp": 0.7, "layers": 32, "build": "v1.0", "driver": "535.xx" },
+  "performance": { "tokens_per_sec": 0.0, "time_to_first_token": 0.0 },
+  "monitoring": { "cpu_avg": 0.0, "gpu_mem_peak": 0, "status": "success|failed|missing" },
+  "exit_code": 0
+}
+```
+
+**File Conventions:**
+*   **Atomic Writes:** `metadata.json` will be written to a `.tmp` file and renamed to `metadata.json` to prevent partial writes.
+*   **Prompt Preservation:** The exact prompt used (including escaped newlines) will be stored in the `identity_tuple` to ensure the hash remains valid for audit.
+
+---
+
+### Analysis Integrity
+
+**Failure Handling:**
+*   **Failed Runs:** If `exit_code != 0`, `tokens_per_sec` in `metadata.json` must be set to `null`. The downstream analysis tool must filter out `null` values to prevent "zero-throughput" bias.
+*   **Partial Output:** If `response.txt` is detected as truncated (e.g., ends mid-sentence or fails to reach `gen_limit`), a `truncated: true` flag is added to the metadata.
+*   **Variable Token Count:** To prevent misleading comparisons, throughput must be calculated as `(Total_Tokens_Generated / Total_Time_Spent)`. If `Total_Tokens_Generated` is 0, the entry is invalidated.
+
+**Parser Robustness:**
+*   The `Parser_Module` will use a "Best Effort" approach. If `llama.cpp` changes its output format, the parser will log a `warning: unknown_format` in the metadata and return `null` for metrics rather than crashing the runner.
+
+---
+
+### Test Plan
+
+1.  **Backend Failure:** Simulate a CUDA OOM by requesting 99% of VRAM. Verify `exit_code != 0` and `performance.tokens_per_sec` is `null`.
+2.  **Missing Monitor:** Run with a non-existent monitoring tool. Verify `metadata.json` marks `monitoring.status` as `missing` but still records `performance` data.
+3.  **Complex Prompt:** Provide a prompt with `\n`, `\t`, and `"` characters. Verify the `identity_tuple.prompt` matches the input exactly in the final JSON.
+4.  **Partial Output:** Mock a process that kills itself after 5 tokens. Verify `truncated: true` flag is set in metadata.
+5.  **Identity Collision:** Run two tests with different prompts but identical hardware/model. Verify they generate two distinct `Run_ID`s and separate files.
+6.  **Timeout:** Set a 1-second timeout for a 100-token generation. Verify the runner kills the process and logs `status: TIMEOUT`.
+
+---
+
+### Pre-merge Review
+
+1.  **Risk:** **Race Condition on `raw_log.txt`.** If multiple runs occur in the same directory, they might overwrite logs.
+    *   *Fix:* Use `Run_ID` as a prefix for all files (e.g., `[Run_ID]_response.txt`).
+2.  **Risk:** **Monitor Interference.** The monitor agent might consume significant resources, skewing the benchmark.
+    *   *Fix:* Implement a "Low-Priority" flag for the monitor process and ensure it samples at a low frequency (e.g., 1Hz).
+3.  **Risk:** **Identity Tuple Drift.** A slight change in the `llama.cpp` build string (e.g., timestamp) might break the "identical" requirement.
+    *   *Fix:* Use a specific `Build_ID` (git hash or manual version) defined in the config, rather than an automated version string.
+
+[ Prompt: 805.2 t/s | Generation: 34.4 t/s ]
+
+
+Exiting...

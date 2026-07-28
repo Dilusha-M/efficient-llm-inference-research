@@ -1,0 +1,170 @@
+
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b10110-8f5ab832c
+model      : /home/dilusha/llm-research/models/Gemma/gemma-4-12B-it-QAT-GGUF/gemma-4-12B-it-QAT-Q4_0.gguf
+ftype      : Q4_0
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> You are reviewing production-quality Python for an inference benchmark. Implement the function below in Python using only the standard library.
+
+Task:
+Implement `summarize_decode_speeds(lines)` where `lines` is an iterable of strings. Return a dictionary with exactly these keys:
+
+* `count`: number of valid decode records
+* `min_tps`: minimum valid tps, or `None` when there are no valid records
+* `max_tps`: maximum valid tps, or `None` when there are no valid records
+* `avg_tps`: arithmetic mean  ... (truncated)
+```python
+import math
+from typing import Iterable, Dict, Optional, Any
+
+def summarize_decode_speeds(lines: Iterable[Any]) -> Dict[str, Optional[float]]:
+    """
+    Summarizes decode speeds from an iterable of strings in a single pass.
+    
+    Complexity:
+    - Time: O(N) where N is the total number of characters across all lines.
+    - Space: O(1) excluding the input, as we only track running aggregates.
+    """
+    count = 0
+    min_tps = float('inf')
+    max_tps = float('-inf')
+    sum_tps = 0.0
+
+    for line in lines:
+        if not isinstance(line, str):
+            continue
+            
+        # Tokenize by whitespace
+        tokens = line.split()
+        if not tokens:
+            continue
+
+        kv_pairs = {}
+        is_decode_event = False
+        valid_line = True
+
+        for token in tokens:
+            if '=' not in token:
+                continue
+            
+            key, val = token.split('=', 1)
+            
+            # Rule: Ignore duplicate keys with conflicting values or 
+            # Treat duplicate tps with same value as malformed.
+            if key in kv_pairs:
+                valid_line = False
+                break
+            
+            kv_pairs[key] = val
+            if key == "event" and val == "decode":
+                is_decode_event = True
+
+        # Validation Logic
+        if not valid_line or not is_decode_event or "tps" not in kv_pairs:
+            continue
+
+        try:
+            tps_str = kv_pairs["tps"]
+            tps_val = float(tps_str)
+            
+            # Rule: Must be finite, strictly positive decimal
+            if not math.isfinite(tps_val) or tps_val <= 0:
+                continue
+            
+            # If we reached here, the record is valid
+            count += 1
+            sum_tps += tps_val
+            if tps_val < min_tps:
+                min_tps = tps_val
+            if tps_val > max_tps:
+                max_tps = tps_val
+        except ValueError:
+            # Handles non-numeric strings or malformed floats
+            continue
+
+    if count == 0:
+        return {
+            "count": 0,
+            "min_tps": None,
+            "max_tps": None,
+            "avg_tps": None
+        }
+
+    return {
+        "count": count,
+        "min_tps": min_tps,
+        "max_tps": max_tps,
+        "avg_tps": round(sum_tps / count, 3)
+    }
+
+if __name__ == "__main__":
+    # Demonstration Data
+    demo_data = [
+        "event=decode tps=10.5 status=success",          # Valid
+        "event=decode tps=20.0 extra=data",               # Valid
+        "event=generate tps=50.0",                        # Invalid: Wrong event
+        "event=decode tps=not_a_number",                   # Invalid: Malformed float
+        "event=decode tps=nan",                            # Invalid: NaN
+        "event=decode tps=100.0 tps=200.0",                # Invalid: Duplicate key
+        12345,                                               # Invalid: Non-string item
+        "event=decode tps=10.123456",                      # Valid: Requires rounding
+        "event=decode tps=-5.0",                           # Invalid: Negative
+        "event=decode tps=0.0"                             # Invalid: Zero
+    ]
+
+    # Expected Summary:
+    # Valid records:
+    # 1. tps=10.5
+    # 2. tps=20.0
+    # 3. tps=10.123456
+    # Count: 3
+    # Min: 10.123456 (Wait, 10.123456 is smaller than 10.5) -> Actually 10.123456
+    # Max: 20.0
+    # Avg: (10.5 + 20.0 + 10.123456) / 3 = 40.623456 / 3 = 13.541152 -> 13.541
+    
+    # Re-calculating Min:
+    # 10.5, 20.0, 10.123456 -> Min is 10.123456
+    
+    result = summarize_decode_speeds(demo_data)
+    print(f"Result: {result}")
+
+    # Assertions
+    assert result["count"] == 3, f"Expected count 3, got {result['count']}"
+    # This catches common errors like missing the "strictly positive" check or rounding error
+    assert result["avg_tps"] == 13.541, f"Expected avg 13.541, got {result['avg_tps']}"
+```
+
+### Technical Explanations
+
+**Why naive substring matching is insufficient:**
+1.  **Key Ambiguity:** A substring search for `tps=10` would match `total_tps=10` or `tps=10_extra`, leading to incorrect data extraction.
+2.  **Duplicate Keys:** Substring matching does not easily detect if a key appears twice in a single line. The requirements state that duplicate keys (even with the same value) must render the line malformed.
+3.  **Event Context:** Substring matching might find `event=decode` in a line that actually contains `event=generate` and `event=decode` as part of a different metadata field. Parsing into a key-value map ensures the specific `event` key is the one being evaluated.
+
+**Empty-result policy:**
+The function returns `None` for `min_tps`, `max_tps`, and `avg_tps` when `count == 0`. This is standard for production-grade code to distinguish between a "zero" value (which is mathematically valid for some metrics) and the "absence of data" (which is a state of the input stream). Returning `0.0` for an empty list would be mathematically incorrect as the mean of an empty set is undefined.
+
+[ Prompt: 815.1 t/s | Generation: 34.8 t/s ]
+
+
+Exiting...

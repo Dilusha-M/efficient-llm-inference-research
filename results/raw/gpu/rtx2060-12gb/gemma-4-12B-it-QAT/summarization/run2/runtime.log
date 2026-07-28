@@ -1,0 +1,70 @@
+
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b10110-8f5ab832c
+model      : /home/dilusha/llm-research/models/Gemma/gemma-4-12B-it-QAT-GGUF/gemma-4-12B-it-QAT-Q4_0.gguf
+ftype      : Q4_0
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> Summarize the following technical document. Focus on the experimental design, measurement methodology, limitations, and reproducibility implications.
+
+Technical document:
+
+Large language model inference on consumer hardware is constrained by a combination of memory capacity, memory bandwidth, compute throughput, software backend maturity, and workload shape. Unlike training, inference is often dominated by repeated matrix-vector operations during autoregressive decoding. During prompt processing ... (truncated)
+This summary outlines the technical requirements and methodology for benchmarking Large Language Model (LLM) inference on consumer-grade hardware as described in the provided document.
+
+### **1. Experimental Design**
+The document emphasizes a rigorous, multi-dimensional approach to benchmarking, where a "condition" is defined by a specific tuple of variables. To ensure scientific integrity, any change in the following must be treated as a new experiment:
+*   **Model & Quantization:** Specific GGUF files, quantization types (e.g., Q4 vs. Q8_0), and layer offload counts.
+*   **Backend & Software:** Specific builds of `llama.cpp`, driver versions, and backend types (CPU, CUDA, Vulkan).
+*   **Workloads:** Diverse patterns including Chat (general), Coding (structured reasoning), Summarization (long context), Batch (grouped tasks), and Agentic (planning).
+*   **Hardware Context:** Distinct labels for hardware (e.g., `gpu/rtx2060-12gb`) supported by deep metadata (CPU/RAM specs, VRAM, power limits).
+*   **Control Variables:** Fixed prompts (versioned via paths or hashes), consistent temperature/sampling settings, and defined generation limits.
+
+### **2. Measurement Methodology**
+The methodology prioritizes the separation of different inference phases and the preservation of raw data:
+*   **Dual-Metric Tracking:** Users must measure **Prompt Evaluation** (matrix-matrix operations) and **Decoding** (matrix-vector operations) separately, as they have different hardware bottlenecks.
+*   **Performance Extraction:** Key metrics include prompt/decode tokens per second, time to first token, and total wall-clock time, extracted directly from `llama.cpp` performance flags.
+*   **Resource Monitoring:** Concurrent sampling of system metrics (Power draw, temperature, VRAM/RAM usage, and CPU utilization) to provide context for performance fluctuations.
+*   **Data Hierarchy:** The framework maintains a three-tier data structure:
+    1.  **Raw Artifacts:** Full `stdout/stderr` (the primary source of truth).
+    2.  **Metadata:** Configuration, hardware snapshots, and success/failure status.
+    3.  **Processed CSVs:** Derived artifacts for plotting and analysis.
+
+### **3. Limitations and Threats to Validity**
+The document identifies several factors that can obscure "pure" hardware performance:
+*   **Environmental Instability:** Thermal throttling, background processes, and GPU boost behaviors can cause variance in consumer systems.
+*   **Software Maturity:** Differences in performance between backends (e.g., CUDA vs. Vulkan) may reflect software optimization rather than raw hardware capability.
+*   **Quantization Trade-offs:** Lower precision reduces memory but may not improve throughput linearly due to dequantization overheads or kernel limitations.
+*   **Sampling Variability:** Stochastic generation can affect token counts; deterministic settings are preferred for consistent throughput comparisons.
+*   **Contextual Constraints:** Performance may degrade unpredictably if the Key-Value (KV) cache spills into system memory.
+
+### **4. Reproducibility Implications**
+To ensure results can be replicated by other researchers, the document mandates:
+*   **Persistence of Failures:** Failed runs (e.g., Out-of-Memory errors) must be recorded as data points to avoid "survivorship bias."
+*   **Statistical Rigor:** A minimum of three runs per condition is required to identify instability, with a preference for median values over means to mitigate outliers.
+*   **Traceability:** Every result must be traceable back to a specific binary path, prompt hash, hardware snapshot, and parser version.
+*   **Transparency of Intent:** Researchers must explicitly state whether they are measuring **maximum achievable throughput** (optimized environment) or **realistic interactive performance** (standard desktop settings).
+
+[ Prompt: 876.0 t/s | Generation: 34.2 t/s ]
+
+
+Exiting...
