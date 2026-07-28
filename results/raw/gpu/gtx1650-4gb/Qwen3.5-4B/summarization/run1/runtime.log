@@ -1,0 +1,76 @@
+
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b10110-8f5ab832c
+model      : /home/dilusha/llm-research/models/Qwen/Qwen3.5-4B-GGUF/Qwen3.5-4B-Q4_K_M.gguf
+ftype      : Q4_K - Medium
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> Summarize the following technical document. Focus on the experimental design, measurement methodology, limitations, and reproducibility implications.
+
+Technical document:
+
+Large language model inference on consumer hardware is constrained by a combination of memory capacity, memory bandwidth, compute throughput, software backend maturity, and workload shape. Unlike training, inference is often dominated by repeated matrix-vector operations during autoregressive decoding. During prompt processing ... (truncated)
+Here is a summary of the technical document, structured around experimental design, measurement methodology, limitations, and reproducibility implications.
+
+### 1. Experimental Design
+The benchmark is designed to isolate specific performance constraints in consumer hardware by separating inference into distinct phases and controlling variables rigorously.
+*   **Workload Segmentation:** The experiment distinguishes between **prompt processing** (matrix-matrix operations, parallelized) and **autoregressive decoding** (matrix-vector operations, sequential). Throughput metrics are measured separately for these phases.
+*   **Condition Tuple:** A unique benchmark condition is defined as a tuple containing: model file, backend (CPU/CUDA/Vulkan), hardware label, context length, generation limit, prompt file, temperature, GPU layer offload settings, llama.cpp build version, and driver environment. Any change in this tuple creates a distinct experimental condition.
+*   **Resource Constraints:** Experiments are explicitly designed to test resource-constrained scenarios (e.g., limited VRAM, thermal throttling, power limits) rather than idealized environments.
+*   **Failure Inclusion:** Failed runs (due to VRAM overflow, driver issues, or missing files) are retained as meaningful data points to avoid survivorship bias, rather than being silently skipped.
+
+### 2. Measurement Methodology
+The methodology prioritizes raw data capture and granular monitoring to ensure auditability.
+*   **Metrics Extraction:**
+    *   **Core Metrics:** Prompt evaluation time, decode time, tokens generated, and tokens per second (TPS).
+    *   **Resource Monitoring:** GPU metrics (power, temperature, memory usage, utilization) via `nvidia-smi`; CPU/RAM metrics via Linux interfaces (`/proc/stat`, `sensors`).
+    *   **Timing:** Time to first token (TTFT) is recorded only if reliably available by the runtime; otherwise marked as null to prevent fabrication.
+*   **Repetition Strategy:** A minimum of **three runs** per condition is mandated to detect instability caused by thermal throttling, background processes, or memory pressure. Raw outputs are stored separately from aggregated data.
+*   **Data Artifacts:**
+    *   **Primary:** Raw `llama.cpp` stdout/stderr files.
+    *   **Secondary:** Processed CSVs (derived from raw files) and metadata logs.
+    *   **Protocol:** The parser extracts known metrics but preserves the raw stream for manual inspection. CSV schemas are stable but extensible.
+
+### 3. Limitations and Threats to Validity
+The document acknowledges several factors that introduce variability and limit generalization:
+*   **Hardware Variability:** Consumer systems exhibit non-deterministic behavior due to thermal management, power limits, and background system loads. Single-run averages can be misleading; median or max throughput may be more robust depending on the question asked (interactive vs. maximum capability).
+*   **Software & Backend Complexity:** Performance comparisons between backends (CPU vs. CUDA vs. Vulkan) conflate hardware capabilities with software maturity, driver versions, and kernel alignment.
+*   **Quantization & Quality:** Lower precision quantization (e.g., Q4) improves memory footprint but may degrade model quality, which is not measured by throughput alone. Throughput gains are not always linear with quantization changes due to kernel overhead.
+*   **Prompt Sensitivity:** Tokenization and generation behavior are highly sensitive to prompt content and length. Fixed, versioned prompts are critical; accidental edits invalidate results.
+*   **Sampling Variability:** Deterministic settings are often used to ensure consistency, but they may not reflect the variability of interactive, sampled decoding.
+*   **Metric Interpretation:** GPU utilization and power draw are sampled snapshots, not real-time causal measures. RAM usage includes OS caches, complicating attribution of memory pressure.
+
+### 4. Reproducibility Implications
+The document emphasizes that reproducibility depends on the transparency of the entire configuration chain, not just the final number.
+*   **Metadata Rigor:** Every run must record full system metadata: OS, driver version, binary build, specific hardware models, and exact file paths. Labels (e.g., `cpu/ryzen5600`) are grouping conventions, not substitutes for this metadata.
+*   **Prompt Integrity:** Prompts must be version-controlled or hashed to ensure the exact input sequence used in every run.
+*   **Traceability:** Every result must be traceable to a specific model, prompt, command line, hardware snapshot, raw output, and parser rule.
+*   **Automation Constraints:** Automation frameworks should remain simple (shell scripts + Python standard library) to avoid dependency bloat and ensure the experiment can be reproduced on older or less powerful machines.
+*   **Handling Changes:** If any element of the condition tuple changes (e.g., a new driver update), the results must be treated as a new condition, not an adjustment of the previous one.
+
+**Conclusion:**
+The proposed framework aims to create an **inspectable and robust benchmark** that exposes rather than hides performance variability. By separating prompt and decode phases, preserving raw artifacts, and rigorously documenting the experimental tuple, the method ensures that comparisons between consumer hardware reflect true system capabilities while acknowledging the inherent noise of real-world inference environments.
+
+[ Prompt: 157.5 t/s | Generation: 33.1 t/s ]
+
+
+Exiting...

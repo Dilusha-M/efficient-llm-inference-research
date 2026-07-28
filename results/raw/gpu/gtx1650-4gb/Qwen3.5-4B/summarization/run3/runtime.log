@@ -1,0 +1,82 @@
+
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b10110-8f5ab832c
+model      : /home/dilusha/llm-research/models/Qwen/Qwen3.5-4B-GGUF/Qwen3.5-4B-Q4_K_M.gguf
+ftype      : Q4_K - Medium
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> Summarize the following technical document. Focus on the experimental design, measurement methodology, limitations, and reproducibility implications.
+
+Technical document:
+
+Large language model inference on consumer hardware is constrained by a combination of memory capacity, memory bandwidth, compute throughput, software backend maturity, and workload shape. Unlike training, inference is often dominated by repeated matrix-vector operations during autoregressive decoding. During prompt processing ... (truncated)
+Here is a summary of the technical document, structured around experimental design, measurement methodology, limitations, and reproducibility.
+
+### 1. Experimental Design
+The experimental framework is designed to isolate specific constraints in Large Language Model (LLM) inference on consumer hardware, moving beyond generic throughput metrics.
+
+*   **Separation of Throughput Metrics:** The design explicitly distinguishes between **prompt evaluation** (parallel matrix-matrix operations) and **autoregressive decoding** (sequential matrix-vector operations). These must be measured separately due to vastly different hardware utilization patterns.
+*   **Condition Tuple:** A unique experimental condition is defined as a tuple containing: Model file, Backend, Hardware label, Context length, Generation limit, Prompt file, Temperature, GPU layer count, Llama.cpp build version, and driver environment. Any change in this tuple constitutes a distinct experiment.
+*   **Workload Diversity:** Workloads are categorized to test specific inference patterns:
+    *   *Chat:* General explanation.
+    *   *Coding:* Structured reasoning.
+    *   *Summarization:* Long prompts to stress context handling.
+    *   *Batch:* Multiple unrelated tasks.
+    *   *Agentic:* Planning and reviewing without external tools.
+*   **Resource-Conscious Scenarios:** The design includes scenarios for thermal throttling, power management, and partial GPU offloading to reflect realistic, not just maximum, hardware performance.
+
+### 2. Measurement Methodology
+The methodology prioritizes raw data collection and granular resource monitoring over aggregated summary statistics.
+
+*   **Data Preservation:** Raw stdout/stderr streams from the inference engine (e.g., `llama.cpp`) are preserved in result files to allow future re-parsing if extraction logic changes. Processed CSVs are derived artifacts, not primary sources.
+*   **Key Metrics:**
+    *   **Inference Runtime:** Prompt evaluation time/tokens, decode time/tokens, and Time to First Token (TTFT).
+    *   **Hardware Resources:** CPU/RAM usage (`/proc`), GPU VRAM, utilization, power draw, and temperature (via `nvidia-smi` or OS sensors).
+*   **Handling Variance:** To address instability caused by thermal throttling or background processes, a minimum of **three repeated runs** per condition is required. Raw outputs for each run are stored separately, not just aggregated.
+*   **Failure Reporting:** Failures (e.g., OOM, missing drivers, context limit exceeded) are treated as valid data points. Metadata records the error message and status rather than skipping the run, preventing survivorship bias.
+
+### 3. Limitations and Threats to Validity
+The document acknowledges several sources of noise and validity threats inherent to consumer hardware benchmarking.
+
+*   **Hardware & Software Confounding:** Comparing backends (CPU vs. CUDA vs. Vulkan) conflates raw hardware performance with software maturity, driver versions, and kernel alignment.
+*   **Quantization Trade-offs:** Lower precision (e.g., Q4) reduces memory but may alter kernel behavior or dequantization overhead, affecting throughput non-linearly. Model quality is not guaranteed to correlate with quantization level.
+*   **Sampling Variability:** Deterministic settings may yield higher throughput than realistic interactive sampling, which can vary in generation length and content.
+*   **Consumer System Instability:** Thermal throttling, power limits, and background system loads introduce variance that laboratory environments often eliminate.
+*   **Metric Interpretation:**
+    *   GPU utilization is a sampled device metric, not a direct measure of kernel efficiency.
+    *   RAM usage includes OS caches and other processes, making it imprecise for model-specific memory footprint analysis.
+    *   TTFT may not be reliably available from all runtime outputs.
+
+### 4. Reproducibility Implications
+Reproducibility is achieved through strict versioning, explicit metadata, and a modular data architecture.
+
+*   **Metadata Rigor:**
+    *   **Hardware Labels:** Must be human-readable (e.g., `gpu/rtx2060-12gb`) but must be supplemented with full system metadata (OS, driver version, exact binary paths).
+    *   **Version Control:** Prompts should be stored under version control or hashed to detect accidental edits. Model files must record resolved paths, not just aliases.
+*   **Automation Simplicity:** The framework avoids complex orchestration tools to ensure scripts are inspectable and portable. It relies on shell scripts for execution and Python standard libraries for parsing.
+*   **Auditability:** The separation of raw artifacts, metadata, and processed CSVs allows researchers to trace any result back to the specific command line, hardware snapshot, and parser rules used.
+*   **Statistical Reporting:** Results should report the number of repetitions, aggregation method (median vs. mean), and whether failed runs were included. Overclaiming variance from only three runs is cautioned against; three runs are sufficient to detect obvious instability but not for full statistical confidence.
+
+[ Prompt: 155.2 t/s | Generation: 33.2 t/s ]
+
+
+Exiting...
