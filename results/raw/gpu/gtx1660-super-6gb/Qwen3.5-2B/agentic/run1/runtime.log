@@ -1,0 +1,209 @@
+
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b10110-8f5ab832c
+model      : /home/dilusha/llm-research/models/Qwen/Qwen3.5-2B-GGUF/Qwen3.5-2B-Q4_K_M.gguf
+ftype      : Q4_K - Medium
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> You are simulating a senior coding-agent design review without external tools, internet access, shell commands, package installation, or file-system inspection. Work only from the specification and artifacts below. Be concrete enough that another engineer could implement and test the design.
+
+Project:
+A research project needs a command-line llama.cpp benchmark runner supporting CPU, CUDA, and Vulkan; model aliases from a configuration file; fixed workload prompts; performance output; hardware me ... (truncated)
+# Senior Coding-Agent Design Review: Llama.cpp Benchmark Runner
+
+## 1. Requirements and Invariants
+
+### Inputs
+*   **Configuration File (`benchmark.conf` or JSON):** Defines the experimental identity tuple (Model Alias, Backend, Hardware Label, Context, Gen Limit, Temp, Build, Driver Environment, Prompt Hash).
+*   **Workload Spec:** Explicit selection from `chat`, `batch`, `coding`, `summarization`, `agentic`, `world_knowledge`.
+*   **Prompt Template:** A fixed template string (e.g., `{{prompt}}` or a literal string) with an explicit `prompt_hash` field to ensure stability across runs.
+
+### Artifacts
+*   **`run_metadata.json` (Atomic Write):** Per-run summary containing model info, backend, hardware, parameters, and the prompt hash used. Written to a fixed path (e.g., `./logs/runs/<model_id>.json`) immediately upon successful completion or failure.
+*   **`raw_performance.txt`:** The raw, unformatted text output of the benchmark process (e.g., `latency_ms=... tokens=... speed=...`).
+*   **`raw_response.txt`:** The raw text output of the underlying LLM call, used for manual audit of content vs. performance.
+
+### Success/Failure States
+*   **Success:** A single line in `raw_performance.txt` containing valid numeric metrics (latency, tokens, speed) and a valid hardware label.
+*   **Failure:**
+    *   **Process Exit:** The benchmark process returns non-zero exit code.
+    *   **OOM/GC Failure:** The benchmark process terminates due to memory errors or garbage collection failures.
+    *   **Malformed Output:** `raw_performance.txt` contains non-numeric fields or syntax errors in the metrics section.
+    *   **Monitor Failure:** The runner cannot retrieve hardware metadata (e.g., GPU layers) from the driver, even if the process succeeded.
+
+### The Experimental Identity Tuple (Critical Ambiguity)
+Before implementation, **must resolve:** How to map the "Driver Environment" and specific "Build" flags (e.g., `LLAMA_CPP_BUILD_VERSION`, `CUDA_ARCH` vs `LLAMA_CPP_CUDA_ARCH`) into a single, stable identifier for the benchmark run.
+*   *Rationale:* The spec states the runner must distinguish runs based on these variables. However, `LLAMA_CPP_BUILD_VERSION` can change between builds (e.g., 1.0.0 vs 1.1.0) without the backend or hardware label changing. If a user reruns the exact same configuration file on a different build, the "Run ID" must be derived from the configuration, not the process version, to ensure the comparison is valid.
+*   *Proposed Resolution:* The tuple must be defined as: `{Alias, Backend, HardwareLabel, BuildIdentifier, DriverEnv, Context, GenLimit, PromptHash}`. The "Run ID" is the concatenation of the first 4 fields. The "Run ID" is only valid if all other fields remain constant.
+
+### State-Driven Invariants
+1.  **Determinism:** Given the same configuration file, prompt, and hardware, the `raw_performance.txt` content must be byte-for-byte identical across runs.
+2.  **Isolation:** A run cannot consume resources from a subsequent run if the metadata was not saved.
+3.  **No Mixing:** The runner must strictly enforce that results from `run_a` cannot be compared against `run_b` if the `prompt_hash` differs, even if other parameters were identical.
+
+---
+
+## 2. State-Machine Workflow
+
+The workflow is strictly linear, with specific branching logic for error recovery and finalization.
+
+### Phase 1: Validation
+*   **Input:** User selects Workload, Loads Config File.
+*   **Action:** Parse `benchmark.conf`. Extract the `prompt_hash`. Validate that `prompt_hash` exists and matches the provided prompt template.
+*   **Decision:**
+    *   If `prompt_hash` mismatch: **Abort**. Print `Error: Prompt hash mismatch. Run aborted.`. Exit with code 1.
+    *   If `prompt_hash` missing: **Abort**. Print `Error: Missing prompt_hash in configuration.`. Exit with code 1.
+
+### Phase 2: Launch
+*   **Action:** Construct the `llama.cpp` command line arguments (Model, Backend, Context, Gen Limit, Temp, etc.).
+*   **Decision:**
+    *   If `llama.cpp` process starts: Proceed to Phase 3.
+    *   If `llama.cpp` process fails to start (e.g., missing model, incompatible build): **Abort**. Print `Error: Model not found or build incompatibility.`. Exit with code 1.
+
+### Phase 3: Monitoring & Process Lifecycle
+*   **Action:** Start a background subprocess (Monitor) to sample metrics every $N$ ms or upon specific events.
+*   **Condition A: Timeout.** If the benchmark process is killed by the system (timeout):
+    *   *Action:* Log "Benchmark timed out." to `raw_performance.txt` (e.g., `latency_ms=0 timeout=true`).
+    *   *Decision:* Mark run as **Timeout Failure**. Do not attempt to write `run_metadata.json`.
+*   **Condition B: OOM/GC Failure.** If the process exits with non-zero status due to memory:
+    *   *Action:* Log "OOM/GC Failure." to `raw_performance.txt`.
+    *   *Decision:* Mark run as **Failure**. Do not write `run_metadata.json`.
+*   **Condition C: Monitor Failure.** If the background process crashes or cannot retrieve hardware layers:
+    *   *Action:* Log "Monitor unavailable." to `raw_performance.txt`.
+    *   *Decision:* **Critical Path Branch.** The `raw_performance.txt` contains raw metrics. The `run_metadata.json` is **skipped**. The runner must treat the run as successful *only if* the process exited cleanly. If the run is marked successful but metadata is missing, the user cannot verify hardware details. **Action:** Do not write `run_metadata.json`.
+
+### Phase 4: Finalization
+*   **Action:** If the run completed cleanly (no OOM, no timeout, no monitor failure), write `run_metadata.json` to disk.
+*   **Action:** Append the final `raw_performance.txt` line to a cumulative log file for post-processing (optional).
+*   **Action:** Clean up temporary files.
+
+---
+
+## 3. Auditable Design
+
+### Component Boundaries
+To ensure modularity and auditability, the design divides execution into three distinct components:
+
+1.  **Configuration & Validation Module (`config_validator.py`):**
+    *   Validates the JSON/Config file against the `prompt_hash`.
+    *   Validates the "Experimental Identity Tuple" against the run's output to ensure no drift.
+    *   **Auditability:** Logs exact config fields parsed.
+
+2.  **Benchmark Execution Module (`benchmark_runner.py`):**
+    *   Orchestrates the `llama.cpp` CLI invocation.
+    *   Manages subprocess communication (pipes).
+    *   **Auditability:** Prints the raw command line arguments passed to the benchmark process (e.g., `python3 benchmark_runner.py --model my_model --backend llama.cpp ...`). This provides full context for the user to verify correctness.
+
+3.  **Data Persistence Layer (`persistence_layer.py`):**
+    *   Handles writing `run_metadata.json` and appending `raw_performance.txt`.
+    *   Uses atomic-write conventions (e.g., writing to a temp file first, then moving to the final location) to ensure the metadata file exists even if the benchmark fails mid-stream.
+
+### Metadata Schema (`run_metadata.json`)
+```json
+{
+  "run_id": "alias:backend:hw:build:env", // Derived from config
+  "timestamp": "ISO8601",
+  "model": "model_alias",
+  "backend": "llama.cpp",
+  "hardware_label": "cuda:10", // Only present if monitor succeeded
+  "build": "v1.1.0",
+  "driver_env": "linux-5.15",
+  "prompt_hash": "abc123...",
+  "context": 4096,
+  "gen_limit": 256,
+  "temp": 0.7,
+  "workload": "chat"
+}
+```
+
+### Atomic-Write or Partial-File Conventions
+*   **Metadata File:**
+    *   **Write Strategy:** Use `os.utime()` to modify timestamps of a file (e.g., `./logs/runs/my_model.json`) rather than writing new bytes. This ensures the file is always the most recent version and prevents corruption if the write fails partway through.
+    *   **Failure Handling:** If `run_metadata.json` is written but the benchmark fails later, the file remains valid. If the benchmark fails, the file is deleted, and the runner reports a generic "Run Failed" message without the specific failure reason.
+*   **Raw Performance File:**
+    *   **Write Strategy:** Append to a file named `raw_performance.txt` immediately after the benchmark finishes.
+    *   **Content:** Raw output of `llama.cpp`. No formatting (e.g., no "Latency: 10.5ms").
+    *   **Retention:** Retain this file for manual audit. Do not truncate it.
+
+### Preserving stdout/stderr and Prompt
+*   **Prompt:** The prompt used must be explicitly passed via `--prompt` flag to `llama.cpp`. The `prompt_hash` in the config file is used to verify the prompt template was correct.
+*   **Stdout/Stderr:** The `llama.cpp` command line arguments are printed to the terminal by the runner. This captures the exact model name, backend, context, and temp used, which is crucial for the user to audit the run independently of the output file.
+
+---
+
+## 4. Analysis Integrity
+
+### Preventing Misleading Throughput Comparison
+*   **Problem:** If a run fails due to a bad prompt (e.g., `{{user_input}}` with spaces that break the LLM), the benchmark process might still terminate with a non-zero exit code or OOM. A naive parser might treat a "timed out" or "OOM" block as a valid performance run, yielding a false positive throughput metric.
+*   **Solution:**
+    1.  **Strict Output Parsing:** The parser must look for a specific, well-defined marker in `raw_performance.txt` (e.g., a header line like `# Benchmark Start` or a specific section header `## Metrics`).
+    2.  **Fallback Logic:** If the header is missing or the file is malformed, the parser must explicitly set a flag `is_valid_run = false` and set `metrics = { "error": "unknown_format" }`.
+    3.  **No Hidden Metrics:** The parser must not infer throughput from the *absence* of numbers. If the file exists but contains no numbers, it is a failure, not a success with zero metrics.
+
+### Handling Unknown Llama.cpp Output Formats
+*   **Strategy:** The runner does not assume a fixed schema for `raw_performance.txt`.
+*   **Implementation:**
+    *   The parser reads the raw file line-by-line.
+    *   It identifies the presence of a specific section (e.g., `## Latency`, `## Tokens`) using a regex or a predefined list of section headers.
+    *   If the section headers are present but the data inside is not parseable as numbers, the runner logs a warning: `Warning: Inferred metrics section present but values unreadable. Running as success.`.
+    *   Crucially, the runner **never** writes a `run_metadata.json` if the `raw_performance.txt` does not contain a clear, parseable metrics section. This ensures that if the benchmark output is gibberish, the runner knows it cannot trust the results.
+
+---
+
+## 5. Test Plan
+
+The following tests validate the design, including edge cases and failure modes.
+
+1.  **Valid Run (Normal Path):**
+    *   *Scenario:* Config file with valid `prompt_hash`, correct parameters, valid hardware.
+    *   *Action:* Run benchmark with `context=4096, gen_limit=256, temp=0.7`.
+    *   *Check:* Verify `run_metadata.json` is written. Verify `raw_performance.txt` contains valid latency/tokens/speed. Verify `prompt_hash` in metadata matches config.
+
+2.  **Simulated Backend Failure:**
+    *   *Scenario:* Config file specifies `backend=nonexistent_backend`.
+    *   *Action:* Start benchmark.
+    *   *Check:* Verify `run_metadata.json` is *not* written (or contains a generic error). Verify the runner logs "Backend not found" and exits with code 1.
+
+3.  **Missing Monitor (No Hardware Metadata):**
+    *   *Scenario:* Config file specifies `hardware_label=custom`, but the actual driver does not report hardware layers.
+    *   *Action:* Start benchmark.
+    *   *Check:* Verify `raw_performance.txt` contains the hardware label (e.g., `custom`). Verify `run_metadata.json` is *skipped* or contains `hardware_label: null`. Do not crash the runner.
+
+4.  **Prompt with Spaces/Newlines:**
+    *   *Scenario:* Config file `prompt_hash` is set for a prompt containing spaces, but the user types a prompt with newlines/spaces that breaks the template.
+    *   *Action:* Run benchmark.
+    *   *Check:* Verify the runner detects the `prompt_hash` mismatch during validation phase. It should abort and report the specific prompt hash mismatch, not proceed with a corrupted output.
+
+5.  **Partial Output (OOM/GC):**
+    *   *Scenario:* Config file specifies a model that is known to be unstable at high memory pressure or has a specific build version that causes OOM.
+    *   *Action:* Start benchmark.
+    *   *Check:* Verify the benchmark process terminates with a non-zero exit code (OOM or GC). Verify `run_metadata.json` is *not* written. Verify the runner logs "OOM/GC Failure".
+
+6.  **Changed Prompt Hash:**
+    *   *Scenario:* The user modifies the `benchmark.conf` to use a *different* `prompt_hash` than the original run.
+    *   *Action:* Re-run the benchmark with the new config.
+    *   *Check:* Verify the runner detects the `prompt_hash` mismatch in the validation phase. It should abort the run and print the error, preventing a misleading throughput comparison based on a different model's output.
+
+[ Prompt: 643.3 t/s | Generation: 131.2 t/s ]
+
+
+Exiting...

@@ -1,0 +1,196 @@
+Input prompt
+
+You are simulating a senior coding-agent design review without external tools, internet access, shell commands, package installation, or file-system inspection. Work only from the specification and artifacts below. Be concrete enough that another engineer could implement and test the design.
+
+Project:
+A research project needs a command-line llama.cpp benchmark runner supporting CPU, CUDA, and Vulkan; model aliases from a configuration file; fixed workload prompts; performance output; hardware metadata; resource monitoring; and one metadata file per run. Raw output must remain available for manual audit. The runner must distinguish a failed model run from missing optional monitoring data.
+
+Existing constraints:
+* Each condition is repeated three times and compared manually using each run's `response.txt`/raw response plus metrics.
+* The default context is 4096, generation limit 256, temperature 0.7, and CPU thread count 1; a workload may override context explicitly.
+* Workloads are `chat`, `batch`, `coding`, `summarization`, `agentic`, and `world_knowledge`.
+* The runner must not mix results if model file, backend, hardware label, context, generation limit, prompt, temperature, GPU layers, build, or driver environment changes.
+* Monitors may be unavailable or sampled sparsely. A model process may fail after creating partial output.
+
+Required deliverables:
+1. Requirements and invariants: list inputs, artifacts, success/failure states, and the experimental identity tuple. Identify at least one ambiguity that must be resolved before implementation.
+2. State-machine workflow: describe the lifecycle from validation through launch, monitoring, process exit, and finalization, including what happens on timeout, OOM, malformed performance output, and monitor failure.
+3. Auditable design: propose shell/Python component boundaries, a metadata schema, atomic-write or partial-file conventions, and how to preserve stdout/stderr and the exact prompt used.
+4. Analysis integrity: explain how to prevent a failed run or variable generated-token count from producing a misleading throughput comparison, and how a parser should treat unknown llama.cpp output formats.
+5. Test plan: provide at least six tests, including one simulated backend failure, one missing monitor, one prompt containing spaces/newlines, one partial output, and one changed prompt hash.
+6. Pre-merge review: name the three highest-risk design flaws in your proposal and the concrete changes that would fix them.
+
+Use these exact headings: Requirements and Invariants; State Machine; Auditable Design; Analysis Integrity; Test Plan; Pre-merge Review. Keep the design implementation-oriented and avoid claiming that a metric is available if the specification does not guarantee it.
+
+Final model response
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b10110-8f5ab832c
+model      : /home/dilusha/llm-research/models/Qwen/Qwen3.5-2B-GGUF/Qwen3.5-2B-Q4_K_M.gguf
+ftype      : Q4_K - Medium
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> You are simulating a senior coding-agent design review without external tools, internet access, shell commands, package installation, or file-system inspection. Work only from the specification and artifacts below. Be concrete enough that another engineer could implement and test the design.
+
+Project:
+A research project needs a command-line llama.cpp benchmark runner supporting CPU, CUDA, and Vulkan; model aliases from a configuration file; fixed workload prompts; performance output; hardware me ... (truncated)
+# Research Project: Llama.cpp Benchmark Runner Specification
+
+## 1. Requirements and Invariants
+
+### Inputs
+*   **Model Alias List:** A list of strings defining the target models (e.g., `Qwen2.5-7B-Instruct`, `Phi-2`). These are loaded from a configuration file (`config.yaml`) or command-line argument.
+*   **Workload Types:** The set of allowed workloads: `chat`, `batch`, `coding`, `summarization`, `agentic`, `world_knowledge`.
+*   **Hardware Configuration:** Hardware type (CPU, CUDA, Vulkan) and specific device capabilities.
+*   **Prompt Template:** A string containing the fixed workload prompt (e.g., "User: ... Assistant: ...").
+*   **Metadata Flags:** Flags indicating whether to capture raw output or metadata (e.g., `--capture-metadata`).
+
+### Artifacts
+*   **`run_id.txt`:** An atomic-write file containing a unique identifier for the run.
+*   **`metrics.json`:** A JSON file containing timing, resource usage, and token counts *only if* the run completed successfully and monitoring was active.
+*   **`response.txt`:** A raw text file containing the model's raw output (if captured) or the error log (if a failure occurred).
+*   **`hardware_metadata.txt`:** A text file listing the detected GPU drivers, CUDA versions, and Vulkan capabilities.
+
+### Success/Failure States
+*   **Success:** The process exits with code 0. `metrics.json` is populated. `response.txt` contains the completion marker.
+*   **Failure (Runtime Error):** The process exits with a non-zero code (e.g., 137 for CUDA out of memory). `metrics.json` is empty. `response.txt` contains the last partial output or error log.
+*   **Failure (Timeout/Process Aborted):** The process exits with code 137 (OOM) or a custom timeout signal. `metrics.json` is empty. `response.txt` contains the last partial output or error log.
+*   **Failure (Malformed Output):** The process exits with code 1 (SIGTERM) due to malformed performance output. `metrics.json` is empty. `response.txt` contains the error log.
+
+### Experimental Identity Tuple
+To ensure reproducibility and avoid mixing results, the run must be uniquely identified by the tuple:
+`<model_alias, workload, hardware_label, context_size, generation_limit, temperature, build_id, driver_env_hash>`
+
+**Ambiguity Resolution Needed:** The specification mentions distinguishing a "failed model run" from a "missing optional monitoring data" run. The implementation must use the exit code (0 vs >0) and the presence of the `metrics.json` key in the final artifact to strictly differentiate these states, rather than relying solely on the presence of `response.txt`.
+
+## 2. State-Machine Workflow
+
+The runner executes the following phases in strict sequential order:
+
+1.  **Validation Phase:**
+    *   Verify `--model-alias`, `--workload`, and `--context-size` are provided or match defaults.
+    *   Verify `--capture-metadata` is explicitly requested (defaults to false).
+    *   Read the model file path and backend configuration.
+    *   **Decision:** If `--capture-metadata` is false, skip to Launch. If true, proceed to Monitoring.
+
+2.  **Monitoring Phase (Conditional):**
+    *   **Trigger:** Only executed if `--capture-metadata` is true.
+    *   **Action:** Attempt to spawn a monitoring process (or read a pre-existing one) to capture `response.txt` and `metrics.json`.
+    *   **Failure Handling:** If the monitoring process cannot be started or fails to start, the runner logs a warning but continues to Launch.
+    *   **Timeout Handling:** If the monitoring process hangs, the runner logs a warning but continues.
+
+3.  **Launch Phase:**
+    *   Start the `llama.cpp` process.
+    *   Inject the prompt into the model.
+    *   **Timeout Handling:** If the process does not terminate within a defined timeout (e.g., 60s), raise a `SIGTERM` signal to the parent process.
+
+4.  **Finalization Phase:**
+    *   Wait for the `llama.cpp` process to terminate.
+    *   **Failure Handling (OOM/Process Aborted):** If the process exits with code 137 (OOM), terminate the runner gracefully.
+    *   **Failure Handling (Malformed Output):** If the process exits with code 1 (SIGTERM) due to malformed output, terminate gracefully.
+    *   **Failure Handling (Normal Exit):** If the process exits with code 0, parse `metrics.json` to extract final token counts and write `metrics.json` atomically.
+
+## 3. Auditable Design
+
+### Component Boundaries
+*   **`BenchmarkRunner` (Python):** Orchestrates the CLI arguments, manages the state machine, handles signal propagation, and coordinates file I/O.
+*   **`LLamaCpu` (C++):** The actual model execution engine. It reads the prompt, generates tokens, writes to `response.txt`, and exposes the `metrics.json` stream via `llama.cpp`'s `metrics` output.
+*   **`MetricsCollector` (Python):** Manages the lifecycle of the monitoring process. It attempts to launch a background process, waits for it to complete, and aggregates the raw output.
+
+### Metadata Schema (`metrics.json`)
+```json
+{
+  "run_id": "uuid-v4",
+  "model_alias": "...",
+  "workload": "...",
+  "backend": "...",
+  "hardware_label": "...",
+  "context_size": 4096,
+  "generation_limit": 256,
+  "temperature": 0.7,
+  "build_id": "...",
+  "cuda_layers": 0,
+  "driver_env": "NVU11253",
+  "status": "success", // or "failure"
+  "tokens_total": 12345,
+  "tokens_generated": 11221,
+  "latency_ms": 45.6,
+  "cpu_usage_percent": 42.1
+}
+```
+
+### Atomic-Write and Partial-File Conventions
+*   **`run_id.txt`:** Must be written using `os.fsync()` to ensure durability. The file is only deleted if the process exits with code 0; otherwise, it remains for audit purposes.
+*   **`metrics.json`:** Must be written atomically using `tempfile.mkstemp()` followed by `os.rename()` to avoid corruption. If the process crashes (OOM), the file remains empty (or contains the error log).
+*   **`response.txt`:** This file is the "raw output." It is appended to the end of the file system if the model process terminates. If the process crashes during generation, the file contains the partial output. This file must be preserved even if `metrics.json` is missing due to an OOM kill.
+
+### Preserving stdout/stderr
+*   The runner must capture **all** stdout and stderr from the `llama.cpp` process, not just the metrics stream.
+*   **Prompt Injection:** The prompt must be passed to the model via the `--prompt` flag or a file descriptor. Crucially, the prompt must be **quoted** (e.g., `"$PROMPT"`) to prevent shell expansion or word splitting. The exact prompt string is stored in a separate variable in the runner to ensure it matches the one used for evaluation, preventing "prompt pollution" where the model output reflects a different prompt than the benchmarked one.
+
+## 4. Analysis Integrity
+
+### Preventing Misleading Throughput Comparisons
+To prevent a failed run or one with variable generated-token counts from skewing throughput metrics:
+1.  **Strict Failure Threshold:** A run is considered "success" only if `metrics.json` exists and `status` is "success". If the process exits with OOM (137) or SIGTERM (1) due to malformed output, `metrics.json` is explicitly excluded from the comparison.
+2.  **Token Aggregation Logic:** The parser calculates throughput based on `tokens_generated` and `tokens_total`. If a run fails mid-generation, `tokens_generated` might be significantly lower than `tokens_total`. The runner must ensure that `tokens_generated` reflects the completion of the run, not just the start.
+3.  **No Implicit Completion:** The runner does not artificially complete a run if the process exits early. The final metric file is only created upon explicit termination via a clean exit code.
+
+### Parsing Unknown Formats
+The parser must implement a robust fallback mechanism:
+1.  **Primary Format:** Expect standard `llama.cpp` JSON output (`{..., "tokens_total": ..., "tokens_generated": ...}`).
+2.  **Secondary Format (Fallback):** If the standard JSON is missing or malformed, the parser attempts to parse the raw `response.txt` as plain text. It extracts the final line of the file, which typically contains the completion marker (e.g., `{"tokens_total": ..., "tokens_generated": ...}` in some versions, or simply the last token count).
+3.  **Error Logging:** If neither format is found, the parser logs a debug message to `stderr` indicating "Could not parse metrics in JSON or Raw format. Fallback to raw file extraction." It does not crash; it simply fails to populate the JSON metrics, leaving the `status` field as "failure".
+
+## 5. Test Plan
+
+1.  **Simulated Backend Failure:**
+    *   **Action:** Run with `--model-alias` pointing to a file that does not exist.
+    *   **Expectation:** The runner should detect the missing file, set `status` to "failure", and create an empty `metrics.json` without a `run_id`.
+2.  **Missing Monitor:**
+    *   **Action:** Run with `--capture-metadata` set to `false`.
+    *   **Expectation:** The runner should skip the monitoring phase entirely, skip the `metrics.json` creation, and proceed to launch the model. The `metrics.json` file should not exist.
+3.  **Prompt Containing Spaces/Newlines:**
+    *   **Action:** Pass a prompt string containing unquoted spaces and newlines (e.g., `"User: Hello World\n\nAssistant: Hello"`).
+    *   **Expectation:** The runner must quote the prompt string during injection. If the shell expands the spaces (because they weren't quoted), the model output will be incorrect or the benchmark will fail due to unexpected behavior. The test must verify the prompt is quoted in the logs.
+4.  **Partial Output:**
+    *   **Action:** Force the process to exit with OOM (137) by setting `--max-cpu-threads` too high for the hardware.
+    *   **Expectation:** The runner should detect the exit code 137, terminate the process, and write a `metrics.json` file with `status` as "failure" and empty metrics.
+5.  **Prompt Hash Variance:**
+    *   **Action:** Run the benchmark twice with the exact same configuration but change the prompt string slightly between runs.
+    *   **Expectation:** The `run_id` or the `hardware_metadata.txt` (which might include prompt content) should differ between the two runs, proving the identity tuple is sensitive to the prompt.
+6.  **Malformed Performance Output:**
+    *   **Action:** Modify the `llama.cpp` output stream to send a non-standard JSON payload when the model is ready.
+    *   **Expectation:** The runner should detect the SIGTERM signal (exit code 1), terminate gracefully, and ensure `metrics.json` is not created, leaving `response.txt` containing the malformed output.
+
+## 6. Pre-Merge Review
+
+### Risk 1: Premature Metric Extraction
+**Flaw:** The current design attempts to extract metrics *before* the process has fully terminated or has exited cleanly. If the process is killed mid-generation (OOM) and the `metrics.json` is not fully written to disk before the kill, or if the file is truncated, the parser might fail or produce a truncated count.
+**Fix:** Enforce a strict "No Metrics until Exit Code 0" rule. The parser must explicitly check `os.path.exists('metrics.json')` *after* the process has exited. If the file does not exist, the run is treated as a failure with no metrics, regardless of whether the process is killed or timed out.
+
+### Risk 2: Missing Prompt Quote
+**Flaw:** The specification requires distinguishing runs by prompt, but the implementation does not guarantee the prompt is quoted. If the shell quotes the prompt correctly, the benchmark is valid. However, if the shell unquotes it (e.g., due to special characters or specific shell behaviors), the model might receive a string with spaces that splits into multiple arguments.
+**Fix:** Add a debug log in the `BenchmarkRunner` before launching the model process that prints the exact (quoted) prompt string being injected. Verify this string against the one defined in the configuration file to ensure they match.
+
+### Risk 3: Atomic Write Failure on Crash
+**Flaw:** If the `metrics.json` file is written to a temporary location and then the process crashes (OOM) before the `os.rename()` call completes, the file might be left in a partially written state on the disk, leading to corruption.
+**Fix:** Implement a dedicated "Write with Check" routine. First, write to the temp file. Then, immediately check if the original file (or a backup copy) still exists. If the process was killed by the OS before the rename was fully committed, the temp file can be safely deleted to avoid a corrupted `metrics.json` on disk.
