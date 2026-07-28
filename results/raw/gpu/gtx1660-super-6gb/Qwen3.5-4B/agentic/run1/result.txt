@@ -1,0 +1,205 @@
+Input prompt
+
+You are simulating a senior coding-agent design review without external tools, internet access, shell commands, package installation, or file-system inspection. Work only from the specification and artifacts below. Be concrete enough that another engineer could implement and test the design.
+
+Project:
+A research project needs a command-line llama.cpp benchmark runner supporting CPU, CUDA, and Vulkan; model aliases from a configuration file; fixed workload prompts; performance output; hardware metadata; resource monitoring; and one metadata file per run. Raw output must remain available for manual audit. The runner must distinguish a failed model run from missing optional monitoring data.
+
+Existing constraints:
+* Each condition is repeated three times and compared manually using each run's `response.txt`/raw response plus metrics.
+* The default context is 4096, generation limit 256, temperature 0.7, and CPU thread count 1; a workload may override context explicitly.
+* Workloads are `chat`, `batch`, `coding`, `summarization`, `agentic`, and `world_knowledge`.
+* The runner must not mix results if model file, backend, hardware label, context, generation limit, prompt, temperature, GPU layers, build, or driver environment changes.
+* Monitors may be unavailable or sampled sparsely. A model process may fail after creating partial output.
+
+Required deliverables:
+1. Requirements and invariants: list inputs, artifacts, success/failure states, and the experimental identity tuple. Identify at least one ambiguity that must be resolved before implementation.
+2. State-machine workflow: describe the lifecycle from validation through launch, monitoring, process exit, and finalization, including what happens on timeout, OOM, malformed performance output, and monitor failure.
+3. Auditable design: propose shell/Python component boundaries, a metadata schema, atomic-write or partial-file conventions, and how to preserve stdout/stderr and the exact prompt used.
+4. Analysis integrity: explain how to prevent a failed run or variable generated-token count from producing a misleading throughput comparison, and how a parser should treat unknown llama.cpp output formats.
+5. Test plan: provide at least six tests, including one simulated backend failure, one missing monitor, one prompt containing spaces/newlines, one partial output, and one changed prompt hash.
+6. Pre-merge review: name the three highest-risk design flaws in your proposal and the concrete changes that would fix them.
+
+Use these exact headings: Requirements and Invariants; State Machine; Auditable Design; Analysis Integrity; Test Plan; Pre-merge Review. Keep the design implementation-oriented and avoid claiming that a metric is available if the specification does not guarantee it.
+
+Final model response
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b10110-8f5ab832c
+model      : /home/dilusha/llm-research/models/Qwen/Qwen3.5-4B-GGUF/Qwen3.5-4B-Q4_K_M.gguf
+ftype      : Q4_K - Medium
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> You are simulating a senior coding-agent design review without external tools, internet access, shell commands, package installation, or file-system inspection. Work only from the specification and artifacts below. Be concrete enough that another engineer could implement and test the design.
+
+Project:
+A research project needs a command-line llama.cpp benchmark runner supporting CPU, CUDA, and Vulkan; model aliases from a configuration file; fixed workload prompts; performance output; hardware me ... (truncated)
+# Requirements and Invariants
+
+### Inputs
+*   **Configuration File**: JSON/INI format containing model aliases, backend selection (CPU/CUDA/Vulkan), and default workload parameters.
+*   **Workload Definition**: Type (`chat`, `batch`, `coding`, `summarization`, `agentic`, `world_knowledge`), context length (default 4096), generation limit (default 256), temperature (default 0.7), and thread count (default 1).
+*   **Workload Prompts**: Fixed prompts per type, stored in a canonical directory.
+*   **Model Path**: Absolute path to the `.gguf` or binary model file.
+*   **Environment Variables**: `LLAMA_BACKEND`, `LLAMA_MAX_BATCH_SIZE`, `LLAMA_MAX_SEQ_LEN`, `LLAMA_N_THREADS`, `LLAMA_TIMEOUT_MS`.
+
+### Artifacts
+*   **`run_id.json`**: Atomic metadata file containing the experimental identity tuple.
+*   **`metrics.json`**: Aggregated performance metrics (tokens/sec, latency).
+*   **`response.txt`**: Raw model output (must be preserved for audit).
+*   **`stdout.log`** & **`stderr.log`**: Complete process I/O streams.
+*   **`monitor_data.json`** (Optional): Hardware monitoring data if available.
+
+### Success/Failure States
+*   **Success**: Model runs to completion, generates `response.txt`, produces valid metrics, and creates `run_id.json`.
+*   **Partial Success**: Model generates partial output and exits early (e.g., OOM, timeout). `response.txt` exists but is truncated.
+*   **Failure**: Process crashes, returns non-zero exit code, or fails to initialize the engine. No valid `response.txt` or metrics.
+
+### Experimental Identity Tuple
+The unique identifier for a run must be a hash of:
+`{model_hash, backend, hardware_label, context_len, gen_limit, prompt_hash, temperature, gpu_layers, build_commit, driver_version}`.
+*Constraint*: Any change in this tuple invalidates previous results; tests must ensure isolation by resetting the environment or using unique hashes.
+
+### Identified Ambiguity
+**Ambiguity**: The specification requires distinguishing between a "failed model run" and "missing optional monitoring data," but does not explicitly define the **granularity of sampling** for hardware monitors.
+*   **Risk**: If a monitor samples every 10ms but the run is 200ms, we cannot confirm if a spike occurred. If it samples every 10s, we might miss a GPU OOM during a short spike.
+*   **Resolution**: Define a minimum sampling frequency (e.g., 50ms) or a "snapshot-per-generation" strategy in the design phase. For this implementation, we assume a **snapshot-per-generation** approach for accuracy, or a fixed high-frequency interval if a global hardware monitor is available.
+
+---
+
+# State Machine
+
+The runner operates on a finite state machine with the following states: `IDLE` -> `VALIDATE` -> `PREPARE` -> `RUNNING` -> `COMPLETED` or `FAILED`.
+
+1.  **`IDLE`**:
+    *   Parse arguments and config.
+    *   Compute `experimental_identity`.
+    *   Check for file write locks on `run_id.json`.
+
+2.  **`VALIDATE`**:
+    *   Verify model file exists.
+    *   Verify prompt file exists for the requested workload.
+    *   Resolve backend environment variables.
+    *   **Action**: If validation fails (missing file, invalid backend), transition to `FAILED` with error code `E_VALIDATION`.
+
+3.  **`PREPARE`**:
+    *   Fork a subprocess to handle the actual model execution.
+    *   Set up `stdout.log` and `stderr.log` for atomic capture.
+    *   Initialize monitor processes (if enabled).
+    *   **Action**: Transition to `RUNNING`.
+
+4.  **`RUNNING`**:
+    *   Monitor child process exit code and I/O.
+    *   **Timeout Handling**: If `LLAMA_TIMEOUT_MS` is exceeded and output is incomplete, kill child, transition to `FAILED` (code `E_TIMEOUT`).
+    *   **OOM Handling**: Detect out-of-memory signals (SIGKILL/SIGSEGV). Transition to `FAILED` (code `E_OOM`).
+    *   **Monitor Failure**: If a monitor process crashes but the model succeeds, log a warning but do **not** fail the run. The run remains `COMPLETED` with `monitor_data.json` marked as `null` or empty.
+    *   **Partial Output**: If the model exits with a non-zero code but has written to `response.txt`, transition to `COMPLETED` with status `PARTIAL`. If it exits with zero but `response.txt` is empty/corrupt, transition to `FAILED` (code `E_CORRUPT`).
+
+5.  **`COMPLETED`**:
+    *   Aggregate metrics from `response.txt` (token count) and any available monitors.
+    *   Calculate throughput.
+    *   Write atomic `run_id.json` and `metrics.json`.
+    *   Transition to `IDLE`.
+
+6.  **`FAILED`**:
+    *   Log detailed error trace to `stderr.log`.
+    *   Do **not** write `metrics.json` (or write it with `error=true` and `tokens=0`).
+    *   Preserve `response.txt` if partial data exists for forensic analysis.
+    *   Transition to `IDLE`.
+
+---
+
+# Auditable Design
+
+### Component Boundaries
+*   **Shell Wrapper (`runner.sh`)**: Handles argument parsing, environment isolation, and orchestration of the Python worker. It ensures that `run_id.json` is written only once (atomic).
+*   **Python Worker (`runner.py`)**:
+    *   Imports `llama.cpp` CLI via `subprocess`.
+    *   Manages file locking for metadata files.
+    *   Parses `stdout` for token counting logic.
+    *   Handles monitor integration.
+*   **Monitor Daemon (`monitor.py`)**: A separate lightweight process that polls GPU/CPU stats and writes to a shared temp directory. It exits independently of the model process.
+
+### Atomic-Write Conventions
+*   **`run_id.json`**: To ensure atomicity, the Python worker will write to a temp file (e.g., `run_id.json.tmp`), verify its contents, and use `flock` (or `fcntl.flock` on Linux) to rename it to `run_id.json` only after a successful run.
+*   **`metrics.json`**: Similarly, write to `metrics.json.tmp`. If the run fails, the temp file is deleted. If the run succeeds, it is renamed atomically.
+*   **`response.txt`**: Stream directly to this file from the model process. No buffering manipulation that could lose the last few characters.
+
+### Preserving Output and Prompts
+*   **Prompt Preservation**: The prompt is passed to the model via a standard input pipe. The *exact* prompt used is recorded in `run_id.json` as a field `prompt_content` (base64 encoded to preserve whitespace/newlines) and `prompt_hash`.
+*   **Stdout/Stderr**: Both streams are redirected to `stdout.log` and `stderr.log` immediately upon fork. The runner must not print to stdout/stderr itself until the child process exits, to prevent race conditions in log capture.
+
+---
+
+# Analysis Integrity
+
+### Preventing Misleading Comparisons
+1.  **Token Count Validation**: The parser must verify that `tokens_generated` > 0 before calculating throughput. If the model exits early with partial tokens, throughput is calculated only over those partial tokens, and the result is flagged as `PARTIAL`.
+2.  **Batch Isolation**: The runner must ensure that no two runs share the same `experimental_identity`. If a previous run with a similar hash exists (e.g., same model, backend, context), it must explicitly report a warning: "Existing run found with identical identity; results may be non-comparable due to hardware state drift."
+3.  **Monitor Data Handling**: If `monitor_data.json` is missing or empty:
+    *   Do **not** include it in the final report unless `error=true`.
+    *   In the analysis phase, treat missing monitor data as "Unknown Hardware State" rather than "Zero Throughput".
+    *   Do not discard the `response.txt` output; the model run was technically successful even if monitoring failed.
+
+### Handling Unknown Output Formats
+The parser for `response.txt` and `metrics.json` must be robust:
+*   **Regex Fallback**: Use a primary parser for standard `llama.cpp` output. If parsing fails (e.g., unexpected JSON structure or new line characters), fall back to a generic JSON parser with error logging.
+*   **Unknown Fields**: If `llama.cpp` outputs a field not in the expected schema (e.g., `experimental_metadata`), log a warning but do not crash. Extract known fields (`tokens`, `time_ms`) and ignore unknowns.
+*   **Partial Parsing**: If the output is truncated (e.g., JSON cut in half), the parser should detect the truncation (missing closing brace/quote) and set `parse_success = false` while attempting to extract the last complete token count if possible.
+
+---
+
+# Test Plan
+
+1.  **Simulated Backend Failure (SIGKILL)**:
+    *   *Setup*: Run with CUDA backend, inject SIGKILL after 50% of expected tokens.
+    *   *Expectation*: State machine transitions to `FAILED`. `response.txt` contains partial output. `metrics.json` exists with `error=true`, `tokens=partial`. `stderr.log` contains the kill signal trace.
+2.  **Missing Monitor**:
+    *   *Setup*: Run with Vulkan backend, but do not start the `monitor.py` daemon (or start it with a fatal error).
+    *   *Expectation*: State machine transitions to `COMPLETED`. `metrics.json` exists but `hardware_metrics` is null/empty. `response.txt` is full length. No crash occurs.
+3.  **Prompt with Spaces/Newlines**:
+    *   *Setup*: Use `agentic` workload with a prompt containing embedded newlines and special characters.
+    *   *Expectation*: `response.txt` preserves the continuation of the prompt in the output. `prompt_hash` in `run_id.json` matches the hash of the raw input.
+4.  **Partial Output (Soft Exit)**:
+    *   *Setup*: Run with a very low generation limit (e.g., 1) on a large context model that refuses to generate without a specific token.
+    *   *Expectation*: State machine transitions to `COMPLETED` with status `PARTIAL`. `tokens_generated` = 0 or 1. Throughput = 0 or very low.
+5.  **Changed Prompt Hash (Isolation)**:
+    *   *Setup*: Run twice with the same model/backend but different prompt hashes.
+    *   *Expectation*: `run_id.json` differs for both runs. The state machine correctly isolates them, preventing one from overwriting the other's metadata.
+6.  **Unknown Output Format**:
+    *   *Setup*: Inject malformed JSON into the simulated output stream of `llama.cpp` (missing closing bracket).
+    *   *Expectation*: Parser detects the malformed JSON, logs a warning, extracts the last valid token count if possible, sets `parse_success = false`, but does not crash the runner.
+
+---
+
+# Pre-merge Review
+
+### Risk 1: Atomic Metadata Overwrite Race Condition
+*   **Flaw**: If two runner instances run concurrently on the same machine without proper locking, the second instance could overwrite the first `run_id.json` and `metrics.json` before the first finishes, destroying the audit trail of the first run.
+*   **Fix**: Implement a global file lock (using `flock`) on the `metadata_dir` directory. The state machine must hold the lock for the entire duration of the `PREPARE` through `FINALIZATION` phase before releasing it.
+
+### Risk 2: Misinterpreting Partial Output as Success
+*   **Flaw**: The design currently allows `COMPLETED` status for partial outputs. If the analysis layer blindly averages throughput across all runs including partials, it will skew performance baselines for hardware comparisons.
+*   **Fix**: Introduce a strict filter in the analysis layer: **Exclude** any run with `status == PARTIAL` or `error == true` from throughput averaging calculations unless explicitly requested for "fault tolerance analysis".
+
+### Risk 3: Monitor Data Corruption in Shared Temp Directory
+*   **Flaw**: If `monitor.py` and the main runner write to the same temp directory without synchronization, and the monitor crashes mid-write, the runner might read a corrupted `monitor_data.json`, causing a false "missing data" flag or a crash in the metrics parser.
+*   **Fix**: Ensure `monitor.py` writes to a dedicated, unique temp file per run (e.g., `monitor_data_<run_id>.json`). The runner should read only from the file matching the current `run_id`. If the file does not exist, treat it as missing, not corrupt.

@@ -1,0 +1,214 @@
+
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b10110-8f5ab832c
+model      : /home/dilusha/llm-research/models/Qwen/Qwen3.5-4B-GGUF/Qwen3.5-4B-Q4_K_M.gguf
+ftype      : Q4_K - Medium
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> You are simulating a senior coding-agent design review without external tools, internet access, shell commands, package installation, or file-system inspection. Work only from the specification and artifacts below. Be concrete enough that another engineer could implement and test the design.
+
+Project:
+A research project needs a command-line llama.cpp benchmark runner supporting CPU, CUDA, and Vulkan; model aliases from a configuration file; fixed workload prompts; performance output; hardware me ... (truncated)
+# Requirements and Invariants
+
+### Inputs and Configuration
+*   **Model Path:** Absolute path to the `.gguf` or `.bin` model file.
+*   **Backend:** String identifier (`cpu`, `cuda`, `vulkan`).
+*   **Workload Type:** One of `chat`, `batch`, `coding`, `summarization`, `agentic`, `world_knowledge`.
+*   **Workload Prompt:** The exact text string defining the input prompt.
+*   **Context Window:** Integer (default 4096).
+*   **Generation Limit:** Integer (default 256).
+*   **Temperature:** Float (default 0.7).
+*   **Thread Count:** Integer (default 1 for CPU, backend-dependent for CUDA/Vulkan).
+*   **Monitor Config:** Optional list of metrics to track (e.g., `memory_usage`, `gpu_util`, `latency`).
+
+### Artifacts and Outputs
+*   **Primary Output File:** `response.txt` (containing the generated text).
+*   **Raw Output:** Full stdout/stderr log of the `llama.cpp` process, preserved verbatim.
+*   **Performance Data:** JSON or CSV containing tokens/s, tokens/s, and timing metrics.
+*   **Metadata File:** A single JSON file per run (e.g., `run_<timestamp>.json`) containing the experimental identity tuple, exit status, and resource summary.
+
+### Success and Failure States
+*   **Success:** The process exits with code 0, `response.txt` contains non-empty text, and the experimental identity tuple matches the input configuration.
+*   **Failure (Process):** The process exits with a non-zero code (OOM, segmentation fault, timeout) *before* generating a complete response or generating partial output.
+*   **Failure (Data):** The process succeeds, but the provided monitor tool fails to attach or return data, or returns malformed data. This is distinct from process failure.
+
+### Experimental Identity Tuple
+Every run must be uniquely identified by a tuple:
+`{ model_path, backend, hardware_label, context, gen_limit, prompt_hash, temperature, gpu_layers, build_id, driver_version }`
+*Note: `hardware_label` is derived from the host environment; `build_id` and `driver_version` are read from runtime system info.*
+
+### Ambiguity Resolution
+**Ambiguity:** The specification states "Raw output must remain available for manual audit" but does not define the delimiter between `llama.cpp` stdout (performance logs) and stderr (errors) or the specific format of the JSON performance output (which may vary by build).
+**Resolution:** The runner must normalize stdout to a single stream, pre-pending a fixed header containing the `prompt_hash` and `timestamp`. Performance metrics must be parsed from a JSON block delimited by `BEGIN_METRICS` and `END_METRICS`. If the format is missing, the run is marked as "Malformed Output" rather than "Process Failure" to allow for manual inspection of the raw logs.
+
+---
+
+# State Machine
+
+The lifecycle follows a linear state machine with optional monitoring phases.
+
+1.  **VALIDATION:**
+    *   Verify `model_path` exists.
+    *   Verify `backend` is supported.
+    *   Generate `prompt_hash` from the `Workload Prompt`.
+    *   Check if the experimental identity tuple matches previous runs (to prevent result mixing).
+    *   *Transition:* If validation fails, exit with code `1` (ConfigError).
+
+2.  **MONITOR ATTACHMENT (Optional):**
+    *   Attempt to initialize the monitor agent (e.g., `nvidia-smi`, `psutil`, custom kernel probe).
+    *   *Branch:*
+        *   **Success:** Enter `RUNNING` with `MONITOR_ACTIVE=true`.
+        *   **Failure:** Enter `RUNNING` with `MONITOR_ACTIVE=false`. (The run continues; missing monitor data is not a fatal error unless explicitly configured as required).
+
+3.  **EXECUTION:**
+    *   Fork `llama.cpp` with specified arguments.
+    *   Capture stdout/stderr to a temporary buffer.
+    *   *Sub-state: TIMEOUT:* If process exceeds `MAX_EXEC_TIME`, terminate process. State -> `RUNNING` -> `TIMEOUT_EXIT`.
+    *   *Sub-state: OOM/KILL:* If OOM killer triggers or signal received, terminate. State -> `RUNNING` -> `SIGTERM_EXIT`.
+
+4.  **MONITORING LOOP:**
+    *   If `MONITOR_ACTIVE=true`: Poll metrics at fixed intervals (e.g., every 1s) until process exit.
+    *   *Branch:*
+        *   **Valid Sample:** Append to `performance_data.json`.
+        *   **Monitor Crash/Timeout:** Log error, continue loop (do not abort main run).
+        *   **Process Exit:** Stop loop.
+
+5.  **FINALIZATION:**
+    *   Copy stdout/stderr to `raw_output.log`.
+    *   Copy generated text to `response.txt`.
+    *   If `response.txt` is empty or `prompt_hash` does not match input: State -> `FAILURE` (Partial/Empty Output).
+    *   Construct `run_<timestamp>.json` metadata.
+    *   Append metadata to `run_history.log` (append-only).
+
+6.  **EXIT HANDLING:**
+    *   **Success:** Return code 0.
+    *   **Failure (Process):** Return code 2 (ProcessExit).
+    *   **Failure (Data/Malformed):** Return code 3 (DataIntegrity).
+
+---
+
+# Auditable Design
+
+### Component Boundaries
+*   **Runner (Shell/Python):** Acts as the orchestrator. It handles state transitions, file I/O, and argument construction. It should not invoke `llama.cpp` directly via `subprocess` without strict argument validation.
+*   **Monitor Agent:** A separate daemon or library process that attaches to the `llama.cpp` PID. It communicates via a local socket or IPC channel, not stdin/stdout, to avoid polluting the `raw_output.log`.
+*   **Parser:** A dedicated Python module responsible strictly for parsing `performance_data.json` and `response.txt`. It should not contain logic for launching processes.
+
+### File Conventions
+*   **Atomic Writes:** Use `tempfile` (Unix) or `tempfile.NamedTemporaryFile` (Windows) with `delete=False`. Once the content is written and validated (e.g., JSON schema check for metadata), `os.rename()` is used to atomically move the file to its final location. This prevents partial files if the script crashes.
+*   **Raw Output Preservation:** `llama.cpp` stdout/stderr is redirected to a temporary file (`raw_output.log`). The Runner reads this file *after* the process exits to ensure no data is lost, even if the monitor crashes.
+
+### Metadata Schema (`run_<timestamp>.json`)
+```json
+{
+  "run_id": "<uuid>",
+  "timestamp_iso": "2023-10-27T10:00:00Z",
+  "identity": {
+    "model_path": "/path/to/model.gguf",
+    "backend": "cuda",
+    "hardware_label": "NVIDIA_A30",
+    "context": 4096,
+    "gen_limit": 256,
+    "prompt_hash": "sha256:abc123...",
+    "temperature": 0.7,
+    "gpu_layers": 4,
+    "build_id": "v0.1.14",
+    "driver_version": "535.121"
+  },
+  "status": "SUCCESS",
+  "process_exit_code": 0,
+  "monitors": {
+    "available": true,
+    "samples_collected": 10,
+    "last_sample_latency_ms": 45
+  },
+  "files": {
+    "response_path": "response.txt",
+    "raw_log_path": "raw_output.log"
+  }
+}
+```
+
+---
+
+# Analysis Integrity
+
+### Preventing Misleading Comparisons
+*   **Token Count Normalization:** Throughput (tokens/s) cannot be compared if the `gen_limit` varies. The design requires `gen_limit` to be an invariant within a specific "series" of runs. If a run terminates early due to a crash, the `tokens_generated` count is recorded, but the comparison logic excludes this run from "tokens/s" averages if the process did not complete the requested `gen_limit`.
+*   **Partial Output Handling:** If `response.txt` is truncated, the parser sets a flag `is_partial: true`. Analysis scripts must weight this run lower or exclude it from "success" metrics, but retain it in the "failure" log for debugging.
+*   **Variable Prompt Length:** The "Workload" defines the prompt. If a workload is changed mid-series, the `prompt_hash` changes, invalidating the run for comparison against the original series.
+
+### Parser Behavior for Unknown Formats
+*   **Strict Mode:** The parser expects `llama.cpp` to output performance data in a known JSON block (`BEGIN_METRICS` ... `END_METRICS`).
+*   **Unknown Format Handling:** If the block is missing or the JSON structure inside differs from the schema:
+    1.  Do not crash the runner.
+    2.  Set `parse_status` to `UNKNOWN_FORMAT`.
+    3.  Log a warning with the raw snippet of the unexpected output.
+    4.  Proceed to finalization so the run can still be audited manually.
+    5.  The runner exits with code 3 (DataIntegrity) to signal that automated analysis will fail, but the raw logs are preserved.
+
+---
+
+# Test Plan
+
+1.  **Standard Successful Run (CPU):**
+    *   Use default config (CPU, 4096 ctx).
+    *   Verify `response.txt` is full, `raw_output.log` contains stdout/stderr, and `run_*.json` has `status: SUCCESS`.
+2.  **Simulated Backend Failure (OOM):**
+    *   Inject a fake OOM signal or modify `llama.cpp` args to force a crash before completion.
+    *   Verify `process_exit_code` is non-zero, `status: FAILURE`, but `response.txt` exists (even if partial/empty).
+3.  **Missing Monitor Data:**
+    *   Start runner with a non-existent monitor binary path.
+    *   Verify runner completes successfully (`status: SUCCESS`), but `monitors.available` is `false` and `samples_collected` is 0.
+4.  **Prompt with Special Characters:**
+    *   Use a prompt containing spaces, newlines, and unicode.
+    *   Verify `prompt_hash` changes correctly and `response.txt` preserves the newline structure.
+5.  **Partial Output (Timeout/Crash):**
+    *   Set a very short `gen_limit` (e.g., 2) and a short timeout.
+    *   Verify `is_partial` flag is set in metadata and `response.txt` contains only the generated tokens.
+6.  **Changed Prompt Hash (Validation):**
+    *   Run with a prompt that has the same length but different semantic content.
+    *   Verify `prompt_hash` differs from the previous run, and the runner correctly identifies this as a new experimental identity, preventing result mixing.
+
+---
+
+# Pre-merge Review
+
+### High-Risk Design Flaws and Fixes
+
+1.  **Flaw: Race Condition in Atomic Writes**
+    *   **Risk:** If the `rename()` operation fails (e.g., disk full, concurrency), the metadata file might be left in a transient state or deleted, leading to "missing run" in the history.
+    *   **Fix:** Implement a retry loop for `rename()` or use a dedicated file locking mechanism (`flock`) before writing the final metadata file to ensure atomicity.
+
+2.  **Flaw: Monitor Agent Pollution**
+    *   **Risk:** If the monitor agent attempts to read from `llama.cpp`'s stdin/stdout to get context or metrics, it will corrupt `response.txt` and `raw_output.log`, making manual audit impossible.
+    *   **Fix:** Enforce strict IPC (Unix Domain Sockets or Named Pipes) between the monitor agent and the `llama.cpp` process. The monitor must never interact with the process's stdout/stderr.
+
+3.  **Flaw: Non-Deterministic Hardware Label**
+    *   **Risk:** The `hardware_label` is derived from the host. If the runner is restarted on a different machine (or a GPU with a different driver version), the `identity` tuple changes, potentially causing legitimate performance differences to be treated as "failed validation" or mixed with previous runs.
+    *   **Fix:** The `identity` tuple change is intentional (good), but the validation logic must explicitly allow `identity` mismatch to trigger a *new* run rather than a *failure*. The constraint "must not mix results" means we must ensure we don't *overwrite* the previous run's data, not that we must fail if the hardware changes. The fix is to ensure the script creates a new run directory/file upon identity mismatch instead of aborting the workflow.
+
+[ Prompt: 250.2 t/s | Generation: 65.9 t/s ]
+
+
+Exiting...

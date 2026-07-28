@@ -1,0 +1,76 @@
+
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b10110-8f5ab832c
+model      : /home/dilusha/llm-research/models/Qwen/Qwen3.5-4B-GGUF/Qwen3.5-4B-Q4_K_M.gguf
+ftype      : Q4_K - Medium
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> Summarize the following technical document. Focus on the experimental design, measurement methodology, limitations, and reproducibility implications.
+
+Technical document:
+
+Large language model inference on consumer hardware is constrained by a combination of memory capacity, memory bandwidth, compute throughput, software backend maturity, and workload shape. Unlike training, inference is often dominated by repeated matrix-vector operations during autoregressive decoding. During prompt processing ... (truncated)
+Here is a summary of the technical document, structured around the requested focus areas:
+
+### **Experimental Design**
+The benchmark framework is designed to rigorously isolate variables affecting Large Language Model (LLM) inference on consumer hardware. Key design principles include:
+*   **Decoupled Metrics:** Throughput must be measured separately for **prompt processing** (parallel matrix-matrix operations) and **decoding** (sequential matrix-vector operations with key-value cache management).
+*   **Strict Condition Tuples:** Each experimental run is defined by a unique tuple comprising the model file, backend (CPU/CUDA/Vulkan), hardware label, context/generation limits, prompt content, temperature, GPU layer offload settings, specific llama.cpp build, and driver environment. Any change in these parameters constitutes a distinct experiment.
+*   **Workload Diversity:** Workloads are varied to stress different inference paths, including:
+    *   *Chat:* General explanation generation.
+    *   *Coding:* Structured reasoning.
+    *   *Summarization:* Long prompts to stress prompt processing and cache allocation.
+    *   *Batch & Agentic:* Grouped tasks or multi-step planning without external tools.
+*   **Determinism vs. Realism:** Experiments may target maximum achievable throughput (controlled thermal/power settings) or realistic interactive performance (ordinary desktop settings), but the intent must be explicitly documented.
+
+### **Measurement Methodology**
+To ensure data integrity and system awareness, the following methodologies are enforced:
+*   **Raw Data Preservation:** The benchmark runner captures the full `stdout` and `stderr` streams of llama.cpp. A parser extracts specific metrics (prompt/decode times, tokens per second, TTF) while leaving raw files available for future re-parsing if extraction logic improves.
+*   **Resource Monitoring:** System resources are sampled during execution using standard interfaces (`nvidia-smi`, `/proc/stat`, `sensors`). Metrics include power draw, temperature, memory usage (RAM/VRAM), and CPU/GPU utilization. Missing data points are recorded as null rather than causing failure.
+*   **Hardware Identification:** Labels are human-readable and stable (e.g., `cpu/ryzen5600` or `gpu/rtx2060-12gb`), but are supplemented with full system metadata (OS, driver versions, binary builds) to ensure reproducibility.
+*   **Failure Handling:** Failed runs (due to OOM, missing binaries, or driver issues) are treated as empirical data points. Metadata records the error message and status, preventing survivorship bias where only successful runs are analyzed.
+
+### **Limitations and Threats to Validity**
+The document acknowledges several sources of variance and limitation inherent to consumer hardware benchmarking:
+*   **System Instability:** Consumer systems suffer from thermal throttling, power management, background processes, and paging, causing latency and throughput to fluctuate.
+*   **Metric Interpretation:**
+    *   GPU utilization and power draw are sampled and may lag behind instantaneous workload changes.
+    *   CPU thread counts and memory configurations (speed vs. core count) significantly impact performance beyond simple model specs.
+    *   "Maximum" metrics do not reflect interactive reality, and vice versa.
+*   **Software vs. Hardware Confounding:** Comparing backends (CPU vs. CUDA vs. Vulkan) conflates hardware capabilities with software maturity, kernel behavior, and driver configurations.
+*   **Prompt Sensitivity:** Small changes in prompt length, content, or tokenization (vocabulary differences) can drastically alter token counts and generation behavior.
+*   **Quantization Trade-offs:** Lower precision (e.g., Q4) improves memory footprint and allows larger models but does not guarantee linear throughput gains due to dequantization overhead and alignment issues.
+
+### **Reproducibility Implications**
+The document emphasizes a "raw first" philosophy to maximize reproducibility:
+*   **Version Control:** Prompts should be versioned (preferably via hash) and stored alongside results. Model files should record both aliases and resolved paths.
+*   **Artifact Separation:** Processed CSV files are derived artifacts and must be regenerated from raw run directories whenever parser logic changes. Raw outputs are the single source of truth.
+*   **Repetition Strategy:** A minimum of three runs per condition is recommended to identify instability, though statistical confidence may require more. Results should be aggregated (e.g., using medians) rather than averaged to mitigate outliers.
+*   **Traceability:** Every result must be traceable back to a specific model build, prompt, command-line invocation, hardware snapshot, and parser rule.
+*   **Automation Constraints:** Automation scripts should remain simple (Shell/Python standard library) to avoid dependency on complex orchestration frameworks that hinder execution on older or less powerful machines.
+
+Ultimately, the framework aims not to hide variability but to expose it transparently, ensuring that conclusions about consumer hardware performance are robust against environmental noise and software inconsistencies.
+
+[ Prompt: 250.4 t/s | Generation: 65.4 t/s ]
+
+
+Exiting...

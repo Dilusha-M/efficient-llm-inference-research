@@ -10,7 +10,7 @@ BASE="$HOME/llm-research"
 
 BACKEND="cuda"
 HARDWARE="gtx1660-super-6gb"
-MODEL="QWEN35_2B"
+MODEL="QWEN35_4B"
 RUNS=3
 GPU_LAYERS=999
 # CUDA-only MoE CPU offload. Leave empty for ordinary layer offloading.
