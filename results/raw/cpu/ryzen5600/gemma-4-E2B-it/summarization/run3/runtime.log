@@ -1,0 +1,87 @@
+warning: no usable GPU found, --gpu-layers option will be ignored
+warning: one possible reason is that llama.cpp was compiled without GPU support
+warning: consult docs/build.md for compilation instructions
+
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b10110-8f5ab832c
+model      : /home/dilusha/llm-research/models/Gemma/gemma-4-E2B-it-GGUF/gemma-4-E2B-it-Q4_K_M.gguf
+ftype      : Q4_K - Medium
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> Summarize the following technical document. Focus on the experimental design, measurement methodology, limitations, and reproducibility implications.
+
+Technical document:
+
+Large language model inference on consumer hardware is constrained by a combination of memory capacity, memory bandwidth, compute throughput, software backend maturity, and workload shape. Unlike training, inference is often dominated by repeated matrix-vector operations during autoregressive decoding. During prompt processing ... (truncated)
+## Summary of Technical Document: LLM Inference Benchmarking on Consumer Hardware
+
+This technical document outlines a rigorous methodology for benchmarking Large Language Model (LLM) inference on consumer hardware, emphasizing the need for detailed recording of experimental conditions, results, and artifacts to ensure reproducibility and validity.
+
+Here is a summary focusing on the requested aspects:
+
+### Experimental Design
+
+The core of the experimental design revolves around systematically varying key parameters while controlling for the hardware and software environment:
+
+* **Separation of Workloads:** The design mandates separating the measurement of **prompt processing throughput** (evaluating the initial input) from **decoding throughput** (generating subsequent tokens), as these processes are dominated by different operations (matrix-vector vs. repeated weight/cache reads).
+* **Workload Diversity:** Experiments must utilize diverse inference patterns, such as **chat**, **coding**, **summarization** (stressing context handling), **batch**, and **agentic** workloads, to test different aspects of the model's capabilities.
+* **Configuration as a Tuple:** A benchmark condition is defined as a tuple containing the **model file, backend, hardware label, context length, generation limit, prompt file, temperature, GPU layer count, and specific build/driver environment.** Any change to this tuple must be explicitly accounted for, as these elements interact to affect performance non-linearly.
+* **Run Repetition:** Repeated runs (a minimum of three) are essential to account for environmental variability (thermal throttling, background processes, power management) inherent in consumer systems.
+* **Failure Handling:** Failed runs (e.g., due to insufficient VRAM or loading errors) must be recorded as meaningful data points, rather than being excluded, to study resource constraints.
+
+### Measurement Methodology
+
+The methodology stresses the importance of capturing both high-level metrics and low-level, raw artifacts:
+
+* **Raw Artifact Preservation:** The benchmark must preserve the **full `stdout`/`stderr` stream** from the inference runtime (e.g., `llama.cpp` output) as the primary source of truth, as output formatting can change between versions.
+* **Performance Metrics:** Key metrics to capture include:
+    * Prompt evaluation time and throughput.
+    * Decode time and throughput.
+    * Time to first token (if reliably measurable).
+    * Generated/decoded tokens per second.
+    * Total wall-clock time.
+* **Resource Monitoring:** Sampling of system resources is crucial:
+    * **GPU:** Timestamp, power draw, temperature, memory usage, and utilization (via `nvidia-smi`).
+    * **CPU/RAM:** Utilization and memory usage (via `/proc` interfaces).
+* **Contextual Data:** Hardware labels must be stable (e.g., `cpu/ryzen5600` or `gpu/rtx2060-12gb`), and comprehensive system metadata (CPU model, RAM, OS, driver version) must accompany every run.
+* **Token Counting:** Prompt token counts should be taken from the inference runtime, not estimated by word/character counts, as tokenization depends on the specific model vocabulary and chat templates.
+
+### Limitations and Reproducibility Implications
+
+The document identifies several inherent limitations and provides strict guidelines to address them:
+
+* **Variability Sources:** Performance is highly variable due to:
+    * **Hardware Behavior:** Thermal throttling, power management, and GPU boost.
+    * **Software/Backend:** Differences in backend maturity (CPU vs. CUDA vs. Vulkan) and specific kernel implementations.
+    * **Quantization Effects:** Throughput does not always improve linearly with lower precision; overheads matter.
+* **Quantization Nuance:** Benchmarks must record the **exact GGUF filename and quantization type**, as performance depends on kernel support and dequantization overheads.
+* **Backend Complexity:** Comparing CPU, CUDA, and Vulkan requires meticulously documenting binary versions, driver versions, and runtime parameters.
+* **Data Interpretation:** Resource monitoring metrics (especially GPU utilization and CPU utilization) are contextual indicators, not direct causal explanations of kernel efficiency.
+* **Reproducibility Control:** Reproducibility hinges on controlling and recording **all configuration variables** (model path, prompt file, build options, etc.). A change in *any* element of the configuration tuple must result in a distinct, traceable result.
+* **Validity Threats:** Researchers must acknowledge that throughput alone does not measure quality, and a single prompt may not represent real-world use.
+
+**In essence, the document advocates for a transparent, artifact-based approach where the primary goal is to expose the inherent variability of consumer hardware inference rather than hide it.**
+
+[ Prompt: 25.3 t/s | Generation: 9.6 t/s ]
+
+
+Exiting...

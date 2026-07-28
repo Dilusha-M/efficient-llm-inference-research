@@ -1,0 +1,78 @@
+warning: no usable GPU found, --gpu-layers option will be ignored
+warning: one possible reason is that llama.cpp was compiled without GPU support
+warning: consult docs/build.md for compilation instructions
+
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b10110-8f5ab832c
+model      : /home/dilusha/llm-research/models/Gemma/gemma-4-E2B-it-GGUF/gemma-4-E2B-it-Q4_K_M.gguf
+ftype      : Q4_K - Medium
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> Summarize the following technical document. Focus on the experimental design, measurement methodology, limitations, and reproducibility implications.
+
+Technical document:
+
+Large language model inference on consumer hardware is constrained by a combination of memory capacity, memory bandwidth, compute throughput, software backend maturity, and workload shape. Unlike training, inference is often dominated by repeated matrix-vector operations during autoregressive decoding. During prompt processing ... (truncated)
+## Summary of Technical Document: Benchmarking LLM Inference on Consumer Hardware
+
+This technical document outlines the critical considerations, experimental design principles, and necessary rigor for benchmarking Large Language Model (LLM) inference on resource-constrained consumer hardware. The core message is that **inference performance is highly dependent on the specific workload, hardware configuration, software backend, and operational context, necessitating a detailed, multi-faceted approach to ensure reproducibility.**
+
+Here is a breakdown focusing on the requested aspects:
+
+### 1. Experimental Design
+
+* **Separation of Workloads:** The design must explicitly separate and measure **prompt processing throughput** (evaluating the input) from **decoding throughput** (generating the output).
+* **Workload Diversity:** Experiments must test diverse inference patterns (e.g., chat, coding, summarization, batch, agentic) to stress different parts of the model and context handling.
+* **Configuration as a Tuple:** A benchmark condition must be treated as a comprehensive tuple containing all relevant variables (model file, backend, hardware label, context length, generation limit, prompt file, temperature, etc.). Changes to any element must be accounted for, as they can independently affect performance.
+* **Run Repetition:** Multiple runs (a minimum of three) are essential to account for system variability (thermal throttling, background processes) and provide statistical confidence.
+* **Failure Handling:** The framework must explicitly record and analyze failed runs (e.g., model loading errors, VRAM insufficiency) as meaningful empirical data points, rather than silently omitting them (avoiding survivorship bias).
+* **Prompt Determinism:** Prompts must be versioned or hashed to ensure that changes in input do not corrupt the association with previous results.
+
+### 2. Measurement Methodology
+
+* **Dual Measurement:** Measure both prompt evaluation and decode performance, along with time-to-first-token.
+* **Raw Output Preservation:** The exact output from the inference runtime (e.g., `llama.cpp` stdout/stderr) must be preserved as the primary source artifact, allowing for later re-parsing if extraction logic changes.
+* **Resource Monitoring:** Sample system resources (GPU utilization, power draw, temperature, CPU/RAM usage) during the run using appropriate tools (`nvidia-smi`, `/proc` interfaces).
+* **Metric Granularity:** Metrics should capture the full context: prompt tokens, generated tokens, throughputs, total time, and resource consumption.
+* **Contextual Labeling:** Hardware labels must be stable (e.g., `cpu/ryzen5600`, `gpu/rtx2060-12gb`), but must be supplemented by full system metadata (CPU model, RAM, driver version) for true reproducibility.
+
+### 3. Limitations and Threats to Validity
+
+* **Quantization Nuances:** Throughput does not always scale linearly with lower precision (e.g., Q4). The specific GGUF filename and quantization type must be recorded, as kernel overhead and dequantization affect performance.
+* **Backend Dependency:** Results are highly dependent on the chosen backend (CPU, CUDA, Vulkan). Comparing backends involves comparing both hardware and software maturity.
+* **System Variability:** Consumer systems introduce significant, unquantifiable variability due to thermal throttling, power management, and background processes.
+* **Metric Interpretation:** Raw metrics (like GPU utilization) are contextual indicators, not direct measures of kernel efficiency, as they are affected by OS scheduling and power states.
+* **Quality vs. Throughput:** Throughput does not equate to model quality; lower precision may affect output fidelity.
+* **Sampling Effects:** When sampling is enabled, generated token counts can vary, suggesting a preference for deterministic settings when measuring throughput.
+
+### 4. Reproducibility Implications
+
+Reproducibility hinges on **controlling and recording the full configuration context**:
+
+* **Configuration Tracking:** The experiment must log the exact configuration used (model alias, prompt file, context length, temperature, quantization type, specific binary paths, driver versions).
+* **Artifact Separation:** The framework must maintain a clear distinction between the primary raw output, the parsed statistical results (CSV), and the supporting resource monitoring data.
+* **Auditability:** The goal is to ensure that any researcher can trace a result back to the exact state of the system and model to understand the observed performance, rather than just presenting a single throughput number.
+
+[ Prompt: 25.3 t/s | Generation: 9.6 t/s ]
+
+
+Exiting...
