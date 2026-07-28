@@ -1,0 +1,229 @@
+Input prompt
+
+You are simulating a senior coding-agent design review without external tools, internet access, shell commands, package installation, or file-system inspection. Work only from the specification and artifacts below. Be concrete enough that another engineer could implement and test the design.
+
+Project:
+A research project needs a command-line llama.cpp benchmark runner supporting CPU, CUDA, and Vulkan; model aliases from a configuration file; fixed workload prompts; performance output; hardware metadata; resource monitoring; and one metadata file per run. Raw output must remain available for manual audit. The runner must distinguish a failed model run from missing optional monitoring data.
+
+Existing constraints:
+* Each condition is repeated three times and compared manually using each run's `response.txt`/raw response plus metrics.
+* The default context is 4096, generation limit 256, temperature 0.7, and CPU thread count 1; a workload may override context explicitly.
+* Workloads are `chat`, `batch`, `coding`, `summarization`, `agentic`, and `world_knowledge`.
+* The runner must not mix results if model file, backend, hardware label, context, generation limit, prompt, temperature, GPU layers, build, or driver environment changes.
+* Monitors may be unavailable or sampled sparsely. A model process may fail after creating partial output.
+
+Required deliverables:
+1. Requirements and invariants: list inputs, artifacts, success/failure states, and the experimental identity tuple. Identify at least one ambiguity that must be resolved before implementation.
+2. State-machine workflow: describe the lifecycle from validation through launch, monitoring, process exit, and finalization, including what happens on timeout, OOM, malformed performance output, and monitor failure.
+3. Auditable design: propose shell/Python component boundaries, a metadata schema, atomic-write or partial-file conventions, and how to preserve stdout/stderr and the exact prompt used.
+4. Analysis integrity: explain how to prevent a failed run or variable generated-token count from producing a misleading throughput comparison, and how a parser should treat unknown llama.cpp output formats.
+5. Test plan: provide at least six tests, including one simulated backend failure, one missing monitor, one prompt containing spaces/newlines, one partial output, and one changed prompt hash.
+6. Pre-merge review: name the three highest-risk design flaws in your proposal and the concrete changes that would fix them.
+
+Use these exact headings: Requirements and Invariants; State Machine; Auditable Design; Analysis Integrity; Test Plan; Pre-merge Review. Keep the design implementation-oriented and avoid claiming that a metric is available if the specification does not guarantee it.
+
+Final model response
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b10110-8f5ab832c
+model      : /home/dilusha/llm-research/models/Qwen/Qwen3.5-2B-GGUF/Qwen3.5-2B-Q4_K_M.gguf
+ftype      : Q4_K - Medium
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> You are simulating a senior coding-agent design review without external tools, internet access, shell commands, package installation, or file-system inspection. Work only from the specification and artifacts below. Be concrete enough that another engineer could implement and test the design.
+
+Project:
+A research project needs a command-line llama.cpp benchmark runner supporting CPU, CUDA, and Vulkan; model aliases from a configuration file; fixed workload prompts; performance output; hardware me ... (truncated)
+# Llama.cpp Benchmark Runner: Design Specification
+
+## 1. Requirements and Invariants
+
+### Inputs and Configuration
+*   **Configuration File (`config.yaml`):** Defines model aliases (e.g., `mistral`, `llama-3-8b-instruct`), backend selection (cpu/cuda/vulkan), hardware labels (GPU name, driver version, CUDA version), and defaults.
+*   **Workload Type:** One of `chat`, `batch`, `coding`, `summarization`, `agentic`, or `world_knowledge`.
+*   **Prompt Hash:** A cryptographic hash of the exact prompt string (including newlines/spaces) used to trigger the benchmark.
+*   **Runtime Parameters:** Context size, generation limit, temperature, and CPU thread count (overrides default 4096/0.7/1).
+
+### Artifacts
+*   **`run_results.txt` (Atomic Write):** The primary output file containing the benchmark metrics. Must be written in binary mode to avoid corruption on partial writes.
+*   **`run_metadata.json` (Partial File):** A JSON file containing specific metadata (model name, backend, hardware details) required for the experiment identity. This file is *not* fully atomic; if it is lost, the run must be re-run.
+*   **`stdout_raw.txt`:** The raw stdout stream captured for audit (exposed via a separate pipe or directory listing, never concatenated into `run_results.txt`).
+
+### Success vs. Failure States
+*   **Successful Run:** All monitored metrics are present. `run_metadata.json` is valid. No unhandled exceptions in the worker process.
+*   **Failed Run:**
+    *   **OOM:** Process killed by OS before completion.
+    *   **Malformed Output:** Worker process exits with non-zero status due to internal logic errors.
+    *   **Monitor Failure:** The monitoring process fails to connect or report data, leaving `run_results.txt` empty or missing.
+    *   **Ambiguity Resolution:** The runner must explicitly track the "Run ID" (derived from model hash + prompt hash + hardware config) to ensure the identity tuple remains consistent despite runtime fluctuations.
+
+### Experimental Identity Tuple
+To prevent mixing results, the system must maintain a strict tuple:
+`{model_name, backend_type, hardware_label, context_size, generation_limit, prompt_hash}`
+Any change in this tuple (e.g., changing the prompt or temperature) requires a new run ID.
+
+---
+
+## 2. State-Machine Workflow
+
+The system follows a deterministic state machine ensuring no state leakage between runs.
+
+1.  **Validation Phase:**
+    *   Parse `config.yaml` to build the Identity Tuple.
+    *   Validate workloads against supported lists.
+    *   Check for required hardware resources (e.g., CUDA driver version >= X.X.X).
+    *   **Decision:** If the tuple is incomplete or invalid, abort with "Missing Required Config".
+
+2.  **Launch Phase:**
+    *   Construct the process tree: `Main Runner` -> `Worker Process` (LLama.cpp) -> `Monitoring Process` (optional, e.g., `nvidia-smi` or `nvidia-collector`).
+    *   Pipe `run_results.txt` from Worker to Main Runner.
+    *   Capture `stdout_raw.txt` from Worker (via a dedicated pipe) for audit purposes.
+    *   **Decision:** If the Worker process fails to start or returns immediately, log a "Launch Failed" error and move to Finalization.
+
+3.  **Execution Phase:**
+    *   Worker executes the benchmark logic based on the workload.
+    *   **Monitoring:**
+        *   *Normal:* Periodically writes metrics to `run_results.txt`.
+        *   *Missing/Failed:* If the monitoring process is unavailable, the Worker simply skips metric updates until it is reconnected. The runner must handle this gracefully without crashing.
+
+4.  **Exit Phase:**
+    *   **Timeout:** Worker exits after a hard timeout (default 60s) without producing output.
+    *   **OOM:** Worker is terminated by the OS.
+    *   **Malformed Output:** Worker exits with a specific error code (e.g., 1 for error).
+    *   **Decision:**
+        *   *Normal Exit:* Append final metrics to `run_results.txt`.
+        *   *Timeout/Malformed:* Trigger a "Cleanup" routine.
+            *   If `run_results.txt` is empty due to monitor failure, append a "NO_MONITOR_DATA" marker to the end of the file.
+            *   If `run_metadata.json` is corrupted/missing, overwrite the file with the new run metadata.
+
+5.  **Finalization:**
+    *   Close all file handles.
+    *   Log the complete run ID in the log file for manual audit.
+    *   **Decision:** If the metadata file cannot be written successfully, log the error and re-run the validation step.
+
+---
+
+## 3. Auditable Design
+
+### Component Boundaries
+*   **Main Runner (Python):**
+    *   *Role:* Configuration parser, process orchestrator, metadata manager, and final aggregator.
+    *   *Exclusions:* Does not call `llama.cpp` binaries directly; delegates execution to a subprocess.
+*   **Worker Process (LLama.cpp):**
+    *   *Role:* Executes the benchmark logic and writes raw metrics.
+    *   *Exclusions:* Does not write `run_results.txt` directly; writes to a temporary internal buffer which is then read and passed to the Main Runner.
+*   **Monitoring Process:**
+    *   *Role:* Collects hardware stats (GPU utilization, memory usage).
+    *   *Exclusions:* Only writes data if connected and healthy. If it fails, it is silently skipped.
+
+### Metadata Schema (`run_metadata.json`)
+```json
+{
+  "run_id": "sha256(...)", // Derived from model + prompt + config
+  "model_name": "string",
+  "backend_type": "string", // e.g., "cpu", "cuda", "vulkan"
+  "hardware_label": "string", // e.g., "Tesla T4", "NVIDIA A100"
+  "context_size": 4096 | 8192,
+  "generation_limit": 256,
+  "temperature": 0.7,
+  "workload": "string",
+  "timestamp": "ISO8601"
+}
+```
+
+### Atomic-Write Conventions
+*   **`run_results.txt`:**
+    *   **Format:** Plain text, one metric per line or structured key-value pairs.
+    *   **Safety:** Must use binary mode (`'w+b'`) or explicit flushing (`'a+b'`) to prevent corruption if the worker crashes mid-write.
+    *   **Completeness:** If the Worker fails to write, the Main Runner must ensure the file is *not* truncated. It must append a sentinel marker (e.g., `#METRICS_END_NO_MONITOR`) to indicate the file is valid but incomplete.
+*   **`run_metadata.json`:**
+    *   **Safety:** Use atomic file operations (`touch -c` or `mv` with a temporary file and `rm` the old one).
+    *   **Partial File Handling:** If the write fails, the file is discarded. The runner logs the error and retries. The *previous* run's data is not lost.
+
+### Preservation of Streams
+*   **Raw Output:** Captured via a named pipe (`/dev/fd/6`) from the Worker to the Main Runner. This ensures the raw stdout is never mixed with the benchmark metrics in `run_results.txt`.
+*   **Prompt Hashing:** The prompt must be hashed (e.g., using `hashlib.sha256`) *before* being passed to the Worker. This ensures the same prompt produces the same `run_id` regardless of the exact prompt string content (e.g., trimming whitespace is handled in the hash generation).
+
+---
+
+## 4. Analysis Integrity
+
+### Preventing Misleading Comparisons
+To ensure a failed run or a run with variable generated-token count does not skew throughput metrics:
+1.  **Per-Run Normalization:** The Main Runner calculates a "normalized" metric (e.g., tokens/sec) for *each* run individually. It does not aggregate these across runs.
+2.  **Identity Locking:** A specific `run_id` is generated for every run. If the Worker fails to produce valid output (e.g., OOM or malformed output), the system treats this as a "failed run" state and reports "No Data" or "Failed" rather than an average.
+3.  **Missing Monitor Handling:** If hardware monitoring is unavailable, the system explicitly labels the run as `monitoring_unavailable`. This prevents the system from comparing hardware utilization against a non-existent baseline.
+4.  **Prompt Hash Integrity:** By hashing the prompt, the system ensures that two runs with the same prompt but different token counts are distinct `run_ids`. This prevents the "variable generated-token count" issue from being conflated with the "failed run" state.
+
+### Handling Unknown Formats
+*   **Parser Strategy:** The Main Runner uses a robust regex parser for `run_results.txt`.
+*   **Graceful Degradation:** If the Worker produces non-standard output (e.g., a JSON array instead of key-value pairs, or missing required fields), the parser attempts to map it. If the mapping fails, it logs a warning and falls back to a "partial data" state, rather than crashing or reporting incorrect metrics.
+*   **Fallback Mechanism:** If standard parsing fails, the runner defaults to reporting "Unknown Format Detected" and stops, preventing the generation of false-positive throughput numbers.
+
+---
+
+## 5. Test Plan
+
+1.  **Simulated Backend Failure:**
+    *   *Scenario:* Mock the Worker process to write only the header and exit immediately (simulating OOM or crash).
+    *   *Goal:* Verify the Main Runner detects the failure, appends the "NO_MONITOR_DATA" marker, and does not crash, allowing the test to complete.
+    *   *Verification:* Check `run_results.txt` ends with the sentinel marker and logs show "Run Completed" rather than "Run Failed".
+
+2.  **Missing Monitor:**
+    *   *Scenario:* Simulate a monitoring process that cannot connect to the GPU or write to the pipe.
+    *   *Goal:* Verify the Worker skips metric updates gracefully.
+    *   *Verification:* `run_results.txt` contains no metrics, but the run completes successfully with a `monitoring_unavailable` flag in the metadata.
+
+3.  **Prompt Containing Spaces/Newlines:**
+    *   *Scenario:* Use a prompt with specific whitespace characters that must be preserved for the hash.
+    *   *Goal:* Ensure the hash generation correctly accounts for these characters, creating a unique `run_id`.
+    *   *Verification:* Two identical prompts (with different whitespace) generate different hashes; a change in whitespace results in a new `run_id` and a new file.
+
+4.  **Partial Output:**
+    *   *Scenario:* Trigger the Worker to write partial metrics (e.g., via a slow I/O operation) and then kill the process abruptly.
+    *   *Goal:* Verify the Main Runner does not truncate the file.
+    *   *Verification:* `run_results.txt` contains the partial metrics followed by the sentinel marker `#METRICS_END_NO_MONITOR`.
+
+5.  **Changed Prompt Hash:**
+    *   *Scenario:* Modify a run's prompt to include extra whitespace or punctuation.
+    *   *Goal:* Verify the `run_id` changes.
+    *   *Verification:* The `run_metadata.json` reflects the new prompt hash; the `run_results.txt` reflects the new context size (if the prompt change implies a different context requirement, though typically context is fixed per run_id logic). *Correction:* In this spec, context is fixed per run config, but the hash itself must be unique. Verifying the hash changes confirms the prompt is included in the identity.
+
+6.  **Changed Prompt Hash (Identity Confusion):**
+    *   *Scenario:* Two runs use the same `run_id` but different prompts (or different hardware configs).
+    *   *Goal:* Verify the system correctly distinguishes them.
+    *   *Verification:* If the prompt was part of the identity tuple, changing the prompt must result in a new `run_id` and overwrite the previous run's metadata, ensuring the system treats them as separate experiments.
+
+---
+
+## 6. Pre-Merge Review
+
+### Flaw 1: The "Garbage Collection" Risk
+*   **Description:** If the `run_metadata.json` file is corrupted or the previous run's data is not properly flushed to disk, the Main Runner might overwrite the previous run's `run_results.txt` entirely, losing all prior results.
+*   **Fix:** Implement a "Rollback" mechanism or a strict "Write-Once-Only" policy for metadata. Ensure that if a write fails, the runner logs the specific file path and does not silently overwrite the previous run's data. Alternatively, use a temporary directory for metadata writes and a final `mv` operation only after confirmation.
+
+### Flaw 2: Silent Metric Loss
+*   **Description:** If the Worker fails to write to `run_results.txt` due to a crash or pipe error, the file becomes empty, and the runner silently appends a marker without logging a clear error to the log file.
+*   **Fix:** The Main Runner must log an explicit `ERROR: run_results.txt is empty or truncated` before appending the marker. This provides an audit trail of *why* the metrics are missing, rather than a silent failure.
+
+### Flaw 3: Non-Atomic Finalization
+*   **Description:** If the Worker produces malformed output (e.g., missing `context_size` field), the Main Runner might attempt to parse and fill in the missing fields, creating a "valid" run with incorrect data.
+*   **Fix:** The parser must be strictly validation-level only. If a required field is missing, the runner must trigger a "Malformed Output" state immediately, writing the sentinel marker and a "MALFORMED_OUTPUT" flag to the metadata, preventing the creation of a misleading result set.
