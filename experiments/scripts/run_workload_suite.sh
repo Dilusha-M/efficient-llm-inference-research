@@ -8,9 +8,9 @@ BASE="$HOME/llm-research"
 # Experiment configuration
 # ==========================
 
-BACKEND="cpu"
-HARDWARE="ryzen5600"
-MODEL="GEMMA4_E2B"
+BACKEND="cuda"
+HARDWARE="rtx2060-12gb"
+MODEL="QWEN35_0_8B"
 RUNS=3
 
 

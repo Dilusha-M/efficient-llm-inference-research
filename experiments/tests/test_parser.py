@@ -47,6 +47,36 @@ eval rate = 10.00 tok/s
         self.assertEqual(row["time_to_first_token"], "1.234567")
         self.assertEqual(row["model_load_time"], "1.235")
 
+    def test_build_row_keeps_cpu_gpu_layers_empty(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run_dir = Path(directory)
+            (run_dir / "metadata.json").write_text(
+                json.dumps({"backend": "cpu", "gpu_layers": 0}), encoding="utf-8"
+            )
+            row = build_row(run_dir)
+
+        self.assertEqual(row["gpu_layers"], "")
+
+    def test_build_row_uses_gpu_layer_override_and_default(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            override_dir = root / "override"
+            override_dir.mkdir()
+            (override_dir / "metadata.json").write_text(
+                json.dumps({"backend": "cuda", "gpu_layers": 12}), encoding="utf-8"
+            )
+            default_dir = root / "default"
+            default_dir.mkdir()
+            (default_dir / "metadata.json").write_text(
+                json.dumps({"backend": "vulkan"}), encoding="utf-8"
+            )
+
+            override_row = build_row(override_dir)
+            default_row = build_row(default_dir)
+
+        self.assertEqual(override_row["gpu_layers"], "12")
+        self.assertEqual(default_row["gpu_layers"], "999")
+
     def test_parses_perf_context_counters_in_any_order(self):
         output = """\
 llama_perf_context_print:

@@ -19,6 +19,7 @@ CSV_COLUMNS = [
     "date",
     "hardware",
     "backend",
+    "gpu_layers",
     "model",
     "workload",
     "context_length",
@@ -194,6 +195,17 @@ def metadata_value(metadata: dict, key: str) -> str:
     return str(value)
 
 
+def gpu_layers_value(metadata: dict) -> str:
+    """Return the CSV gpu layer value for the run's backend."""
+    backend = str(metadata.get("backend", "")).strip().lower()
+    if backend == "cpu":
+        return ""
+    if backend in {"cuda", "vulkan"}:
+        value = metadata_value(metadata, "gpu_layers")
+        return value or "999"
+    return metadata_value(metadata, "gpu_layers")
+
+
 def generated_tokens_from_result(run_dir: Path, metadata: dict) -> str:
     """Recover generated tokens from cleaned results for older runs."""
     result_path = run_dir / "result.txt"
@@ -253,6 +265,7 @@ def build_row(run_dir: Path, debug: bool = False) -> dict:
         "date": metadata.get("date", ""),
         "hardware": metadata.get("hardware", ""),
         "backend": metadata.get("backend", ""),
+        "gpu_layers": gpu_layers_value(metadata),
         "model": metadata.get("model_label") or metadata.get("model_filename", ""),
         "workload": metadata.get("workload", ""),
         "context_length": metadata.get("context_length", ""),
