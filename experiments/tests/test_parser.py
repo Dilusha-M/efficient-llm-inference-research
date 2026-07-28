@@ -3,7 +3,7 @@ import unittest
 import json
 from pathlib import Path
 
-from experiments.scripts.parse_results import build_row, parse_perf
+from experiments.scripts.parse_results import build_row, offload_type_value, parse_perf
 
 
 class ParsePerfTests(unittest.TestCase):
@@ -76,6 +76,12 @@ eval rate = 10.00 tok/s
 
         self.assertEqual(override_row["gpu_layers"], "12")
         self.assertEqual(default_row["gpu_layers"], "999")
+
+    def test_new_offload_fields(self):
+        self.assertEqual(offload_type_value({"backend": "cpu", "gpu_layers": 0}), "none")
+        self.assertEqual(offload_type_value({"backend": "cuda", "gpu_layers": 999}), "none")
+        self.assertEqual(offload_type_value({"backend": "cuda", "gpu_layers": 46}), "layer_offload")
+        self.assertEqual(offload_type_value({"backend": "cuda", "gpu_layers": 46, "n_cpu_moe": 30}), "moe_offload")
 
     def test_parses_perf_context_counters_in_any_order(self):
         output = """\

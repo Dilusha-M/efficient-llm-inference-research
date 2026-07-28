@@ -44,6 +44,7 @@ CONTEXT_EXPLICIT=0
 TOKENS="$DEFAULT_TOKENS"
 TEMP="$DEFAULT_TEMP"
 GPU_LAYERS=""
+N_CPU_MOE=""
 THREADS="$DEFAULT_THREADS"
 INTERVAL="$DEFAULT_INTERVAL"
 DRY_RUN=0
@@ -61,6 +62,8 @@ Options:
   --threads N          llama.cpp worker threads. Default: configured threads
   --gpu-layers N       Override backend GPU layer offload count.
                        Defaults: cpu=0, cuda=999, vulkan=999
+  --n-cpu-moe N        CUDA only: keep MoE weights from the first N layers on CPU.
+                       Omit to leave llama.cpp's default unchanged.
   --interval SECONDS   Resource monitor sampling interval. Default: 1
   --dry-run            Print the final llama.cpp command and exit without running.
   -h, --help           Show this help.
@@ -126,6 +129,10 @@ while [ "$#" -gt 0 ]; do
             GPU_LAYERS="${2:-}"
             shift 2
             ;;
+        --n-cpu-moe)
+            N_CPU_MOE="${2:-}"
+            shift 2
+            ;;
         --interval)
             INTERVAL="${2:-}"
             shift 2
@@ -170,6 +177,14 @@ case "$BACKEND" in
         die "Unsupported backend: $BACKEND"
         ;;
 esac
+
+if [ -n "$N_CPU_MOE" ]; then
+    [ "$BACKEND" = "cuda" ] || die "--n-cpu-moe is supported only with the cuda backend"
+    case "$N_CPU_MOE" in
+        *[!0-9]*) die "n-cpu-moe must be a non-negative integer" ;;
+    esac
+    [ "$N_CPU_MOE" -gt 0 ] || die "n-cpu-moe must be greater than zero when supplied"
+fi
 
 if [ -z "$GPU_LAYERS" ]; then
     GPU_LAYERS="$BACKEND_GPU_LAYERS"
@@ -227,6 +242,10 @@ LLAMA_CMD=(
     -p "$PROMPT_TEXT"
 )
 
+if [ -n "$N_CPU_MOE" ]; then
+    LLAMA_CMD+=(--n-cpu-moe "$N_CPU_MOE")
+fi
+
 echo "Benchmark configuration"
 echo "  backend:   $BACKEND"
 echo "  hardware:  $HARDWARE"
@@ -235,6 +254,7 @@ echo "  workload:  $WORKLOAD"
 echo "  runs:      $RUNS"
 echo "  threads:   $THREADS"
 echo "  gpu layers:$GPU_LAYERS"
+echo "  n-cpu-moe: ${N_CPU_MOE:-none}"
 echo "  output:    $OUT_BASE"
 
 if [ "$DRY_RUN" -eq 1 ]; then
@@ -364,6 +384,11 @@ while [ "$RUN_INDEX" -le "$RUNS" ]; do
         echo "  \"generated_tokens\": $GENERATED_TOKENS,"
         echo "  \"threads\": $THREADS,"
         echo "  \"gpu_layers\": $GPU_LAYERS,"
+        if [ -n "$N_CPU_MOE" ]; then
+            echo "  \"n_cpu_moe\": $N_CPU_MOE,"
+        else
+            echo '  "n_cpu_moe": null,'
+        fi
         echo "  \"temperature\": $TEMP,"
         echo "  \"model_load_time\": $MODEL_LOAD_TIME,"
         echo "  \"total_time\": $TOTAL_TIME,"

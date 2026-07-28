@@ -10,9 +10,12 @@ BASE="$HOME/llm-research"
 
 BACKEND="cuda"
 HARDWARE="rtx2060-12gb"
-MODEL="QWEN36_27B"
+MODEL="QWEN36_35B_A3B"
 RUNS=3
-GPU_LAYERS=46
+GPU_LAYERS=999
+# CUDA-only MoE CPU offload. Leave empty for ordinary layer offloading.
+# Example: N_CPU_MOE=30 keeps MoE weights from the first 30 layers on CPU.
+N_CPU_MOE="21"
 
 # ==========================
 # Workloads
@@ -42,13 +45,19 @@ do
     echo "======================================"
 
 
-    "$BASE/experiments/scripts/run_benchmark.sh" \
-        --backend "$BACKEND" \
-        --hardware "$HARDWARE" \
-        --model "$MODEL" \
-        --workload "$WORKLOAD" \
-        --runs "$RUNS" \
-	--gpu-layers "$GPU_LAYERS"
+    BENCHMARK_ARGS=(
+        --backend "$BACKEND"
+        --hardware "$HARDWARE"
+        --model "$MODEL"
+        --workload "$WORKLOAD"
+        --runs "$RUNS"
+        --gpu-layers "$GPU_LAYERS"
+    )
+    if [ -n "$N_CPU_MOE" ]; then
+        BENCHMARK_ARGS+=(--n-cpu-moe "$N_CPU_MOE")
+    fi
+
+    "$BASE/experiments/scripts/run_benchmark.sh" "${BENCHMARK_ARGS[@]}"
 
 done
 

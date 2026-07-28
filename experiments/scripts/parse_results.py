@@ -20,6 +20,9 @@ CSV_COLUMNS = [
     "hardware",
     "backend",
     "gpu_layers",
+    "cpu_threads",
+    "n_cpu_moe",
+    "offload_type",
     "model",
     "workload",
     "context_length",
@@ -206,6 +209,30 @@ def gpu_layers_value(metadata: dict) -> str:
     return metadata_value(metadata, "gpu_layers")
 
 
+def cpu_threads_value(metadata: dict) -> str:
+    return metadata_value(metadata, "threads") or "1"
+
+
+def n_cpu_moe_value(metadata: dict) -> str:
+    if str(metadata.get("backend", "")).strip().lower() != "cuda":
+        return ""
+    value = metadata_value(metadata, "n_cpu_moe")
+    return "" if value in {"", "None", "null"} else value
+
+
+def offload_type_value(metadata: dict) -> str:
+    backend = str(metadata.get("backend", "")).strip().lower()
+    if backend == "cpu":
+        return "none"
+    if n_cpu_moe_value(metadata):
+        return "moe_offload"
+    try:
+        layers = int(float(gpu_layers_value(metadata)))
+    except (TypeError, ValueError):
+        return "none"
+    return "none" if layers == 999 else "layer_offload"
+
+
 def generated_tokens_from_result(run_dir: Path, metadata: dict) -> str:
     """Recover generated tokens from cleaned results for older runs."""
     result_path = run_dir / "result.txt"
@@ -266,6 +293,9 @@ def build_row(run_dir: Path, debug: bool = False) -> dict:
         "hardware": metadata.get("hardware", ""),
         "backend": metadata.get("backend", ""),
         "gpu_layers": gpu_layers_value(metadata),
+        "cpu_threads": cpu_threads_value(metadata),
+        "n_cpu_moe": n_cpu_moe_value(metadata),
+        "offload_type": offload_type_value(metadata),
         "model": metadata.get("model_label") or metadata.get("model_filename", ""),
         "workload": metadata.get("workload", ""),
         "context_length": metadata.get("context_length", ""),
@@ -293,8 +323,23 @@ def main() -> int:
     output = output_path(base, args.output, args.overwrite)
 
     rows = []
+    existing_rows = {}
+    if output.exists() and args.overwrite:
+        try:
+            with output.open(newline="", encoding="utf-8") as handle:
+                for old_row in csv.DictReader(handle):
+                    if old_row.get("experiment_id"):
+                        existing_rows[old_row["experiment_id"]] = old_row
+        except OSError:
+            pass
     for metadata_path in sorted(raw_root.glob("*/*/*/*/run*/metadata.json")):
-        rows.append(build_row(metadata_path.parent, debug=args.debug))
+        row = build_row(metadata_path.parent, debug=args.debug)
+        old_row = existing_rows.get(row["experiment_id"])
+        if old_row:
+            for column in CSV_COLUMNS:
+                if column not in {"cpu_threads", "n_cpu_moe", "offload_type"} and column in old_row:
+                    row[column] = old_row[column]
+        rows.append(row)
 
     output.parent.mkdir(parents=True, exist_ok=True)
     with output.open("w", newline="", encoding="utf-8") as handle:
