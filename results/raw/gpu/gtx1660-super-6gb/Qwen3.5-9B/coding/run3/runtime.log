@@ -1,0 +1,247 @@
+
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b10110-8f5ab832c
+model      : /home/dilusha/llm-research/models/Qwen/Qwen3.5-9B-GGUF/Qwen3.5-9B-Q4_K_M.gguf
+ftype      : Q4_K - Medium
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> You are reviewing production-quality Python for an inference benchmark. Implement the function below in Python using only the standard library.
+
+Task:
+Implement `summarize_decode_speeds(lines)` where `lines` is an iterable of strings. Return a dictionary with exactly these keys:
+
+* `count`: number of valid decode records
+* `min_tps`: minimum valid tps, or `None` when there are no valid records
+* `max_tps`: maximum valid tps, or `None` when there are no valid records
+* `avg_tps`: arithmetic mean  ... (truncated)
+```python
+from math import isnan, isinf
+from typing import Iterable, Dict, Any, Optional
+
+def summarize_decode_speeds(lines: Iterable[str]) -> Dict[str, Any]:
+    """
+    Summarize decode speeds from a log-like input.
+    
+    Rules:
+    - A record is valid only if it contains 'event=decode' AND 'tps=<value>'.
+    - <value> must be a finite, strictly positive float.
+    - Duplicate keys with conflicting values make the line malformed.
+    - Duplicate keys with the SAME value are also considered malformed (per spec).
+    - Ignore non-string items in the iterable.
+    - Ignore lines with 'event' != 'decode' or missing 'tps'.
+    - Ignore non-finite (nan, inf), zero, or negative tps.
+    
+    Returns:
+        {
+            'count': int,
+            'min_tps': float or None,
+            'max_tps': float or None,
+            'avg_tps': float (rounded to 3 decimals) or None
+        }
+    """
+    
+    # One-pass state
+    count = 0
+    min_tps: Optional[float] = None
+    max_tps: Optional[float] = None
+    sum_tps = 0.0
+    
+    for line in lines:
+        # Skip non-string items gracefully
+        if not isinstance(line, str):
+            continue
+        
+        # Tokenize by whitespace
+        tokens = line.split()
+        
+        # We need to track keys seen in this line to detect duplicates
+        seen_keys: Dict[str, str] = {}
+        is_malformed = False
+        
+        for token in tokens:
+            if '=' not in token:
+                # Ignoring tokens without '=' is fine, they don't contribute to key conflicts
+                # unless they are part of a malformed key=value pair, but the spec says 
+                # "after splitting on whitespace, it contains both event=decode and a tps=<value>"
+                # This implies we look for key=value tokens. If a token lacks '=', it's just ignored.
+                continue
+            
+            key, _, value_str = token.partition('=')
+            
+            # Check for duplicate keys in the same line
+            if key in seen_keys:
+                # Spec: "Treat a duplicate tps key with the same value as malformed too."
+                # This implies ANY duplicate key makes the line malformed.
+                is_malformed = True
+                break
+            
+            seen_keys[key] = value_str
+        
+        if is_malformed:
+            continue
+            
+        # Check required fields
+        if 'event' not in seen_keys or 'tps' not in seen_keys:
+            continue
+        
+        event_val = seen_keys['event']
+        tps_str = seen_keys['tps']
+        
+        # Check event type
+        if event_val != 'decode':
+            continue
+        
+        # Parse tps value
+        try:
+            tps_val = float(tps_str)
+        except ValueError:
+            continue
+        
+        # Check for non-finite values
+        if isnan(tps_val) or isinf(tps_val):
+            continue
+        
+        # Check strictly positive
+        if tps_val <= 0:
+            continue
+        
+        # Valid record found
+        count += 1
+        sum_tps += tps_val
+        
+        if min_tps is None or tps_val < min_tps:
+            min_tps = tps_val
+        if max_tps is None or tps_val > max_tps:
+            max_tps = tps_val
+            
+        # Early exit optimization: if we have data, we can compute average at the end
+        # But we must continue to process all lines for one-pass correctness.
+
+    if count == 0:
+        return {
+            'count': 0,
+            'min_tps': None,
+            'max_tps': None,
+            'avg_tps': None
+        }
+    
+    avg_tps = sum_tps / count
+    # Round to three decimal places
+    avg_tps = round(avg_tps, 3)
+    
+    return {
+        'count': count,
+        'min_tps': min_tps,
+        'max_tps': max_tps,
+        'avg_tps': avg_tps
+    }
+
+
+if __name__ == "__main__":
+    # Demonstration lines covering various cases:
+    # 1. Valid record
+    # 2. Another key=value field (irrelevant)
+    # 3. Non-decode event
+    # 4. Malformed float (text instead of number)
+    # 5. nan value
+    # 6. Duplicate key with same value (malformed per spec)
+    # 7. Non-string item in iterable
+    # 8. Valid record requiring rounding
+    
+    demo_lines = [
+        "event=decode tps=100.0",                    # 1. Valid record
+        "event=decode tps=50.5 model=gpt2",          # 2. Another key=value field
+        "event=encode tps=99.9",                     # 3. Non-decode event
+        "event=decode tps=invalid",                  # 4. Malformed float
+        "event=decode tps=nan",                      # 5. nan value
+        "event=decode tps=10.0 tps=10.0",            # 6. Duplicate key with same value (malformed)
+        "event=decode tps=10.0",                     # 7. (Combined with non-string item below)
+        "event=decode tps=10.0",                     # 8. Valid record requiring rounding (will be used in calculation)
+    ]
+    
+    # Insert a non-string item at index 5 to test robustness
+    non_string_item = 12345
+    demo_lines.insert(5, non_string_item)
+    
+    # Final list for demonstration
+    lines = demo_lines
+    
+    summary = summarize_decode_speeds(lines)
+    print("Summary:", summary)
+    
+    # Expected manual calculation for demonstration:
+    # Line 1: event=decode tps=100.0 -> Valid, tps=100.0
+    # Line 2: event=decode tps=50.5 model=gpt2 -> Valid, tps=50.5
+    # Line 3: event=encode ... -> Invalid (event != decode)
+    # Line 4: event=decode tps=invalid -> Invalid (cannot parse float)
+    # Line 5: event=decode tps=nan -> Invalid (non-finite)
+    # Line 6: event=decode tps=10.0 tps=10.0 -> Invalid (duplicate key)
+    # Line 7: event=decode tps=10.0 -> Valid, tps=10.0 (inserted after non-string)
+    # Line 8: event=decode tps=10.0 -> Valid, tps=10.0 (original line 8)
+    
+    # Wait, let's re-examine the insertion:
+    # Original lines: [0, 1, 2, 3, 4, 5, 6, 7]
+    # After insert at 5: [0, 1, 2, 3, 4, NON-STRING, 6, 7]
+    # So line 6 becomes index 6: "event=decode tps=10.0 tps=10.0" -> Invalid
+    # Line 7 becomes index 7: "event=decode tps=10.0" -> Valid
+    # Line 8 is gone? No, the original list had 8 items (indices 0-7).
+    # Let's recount the original demo_lines before insertion:
+    # 0: "event=decode tps=100.0"
+    # 1: "event=decode tps=50.5 model=gpt2"
+    # 2: "event=encode tps=99.9"
+    # 3: "event=decode tps=invalid"
+    # 4: "event=decode tps=nan"
+    # 5: "event=decode tps=10.0 tps=10.0"
+    # 6: "event=decode tps=10.0"
+    # 7: "event=decode tps=10.0"
+    # After inserting non-string at index 5:
+    # 0: "event=decode tps=100.0" -> Valid
+    # 1: "event=decode tps=50.5 model=gpt2" -> Valid
+    # 2: "event=encode tps=99.9" -> Invalid
+    # 3: "event=decode tps=invalid" -> Invalid
+    # 4: "event=decode tps=nan" -> Invalid
+    # 5: 12345 -> Ignored (non-string)
+    # 6: "event=decode tps=10.0 tps=10.0" -> Invalid (duplicate)
+    # 7: "event=decode tps=10.0" -> Valid
+    # 8: "event=decode tps=10.0" -> Valid (this was original index 7, now shifted)
+    
+    # So valid tps values: 100.0, 50.5, 10.0, 10.0
+    # Count = 4
+    # Min = 10.0
+    # Max = 100.0
+    # Sum = 170.5
+    # Avg = 170.5 / 4 = 42.625 -> rounded to 3 decimals: 42.625
+    
+    print("Expected count: 4")
+    print("Expected min_tps: 10.0")
+    print("Expected max_tps: 100.0")
+    print("Expected avg_tps: 42.625")
+    
+    # Two focused assertions that would catch common incorrect implementations:
+    assert summary['count'] == 4, "Count should be 4 (two valid records before duplicate, one after)"
+    assert summary['avg_tps'] == 42.625, "Average should be rounded to exactly 42.625"
+```
+
+[ Prompt: 131.1 t/s | Generation: 41.0 t/s ]
+
+
+Exiting...

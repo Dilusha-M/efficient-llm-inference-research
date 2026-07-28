@@ -1,0 +1,214 @@
+
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b10110-8f5ab832c
+model      : /home/dilusha/llm-research/models/Qwen/Qwen3.5-9B-GGUF/Qwen3.5-9B-Q4_K_M.gguf
+ftype      : Q4_K - Medium
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> You are reviewing production-quality Python for an inference benchmark. Implement the function below in Python using only the standard library.
+
+Task:
+Implement `summarize_decode_speeds(lines)` where `lines` is an iterable of strings. Return a dictionary with exactly these keys:
+
+* `count`: number of valid decode records
+* `min_tps`: minimum valid tps, or `None` when there are no valid records
+* `max_tps`: maximum valid tps, or `None` when there are no valid records
+* `avg_tps`: arithmetic mean  ... (truncated)
+```python
+from math import isfinite
+from typing import Iterable, Dict, Any, Optional
+
+def summarize_decode_speeds(lines: Iterable[str]) -> Dict[str, Any]:
+    """
+    Summarizes decode speeds from a stream of log-like lines.
+    
+    A record is valid only if:
+      - The line is a string.
+      - After splitting on whitespace, it contains exactly one 'event=decode'.
+      - It contains exactly one 'tps=<value>' where <value> is a finite, positive float.
+      - There are no duplicate keys with conflicting values.
+      - Duplicate keys with the same value are treated as malformed (ignored).
+    
+    Returns a dictionary with keys: count, min_tps, max_tps, avg_tps.
+    """
+    
+    count = 0
+    min_tps: Optional[float] = None
+    max_tps: Optional[float] = None
+    sum_tps = 0.0
+    
+    for raw in lines:
+        # Ignore non-string items gracefully
+        if not isinstance(raw, str):
+            continue
+        
+        tokens = raw.split()
+        if not tokens:
+            continue
+            
+        # We need to track keys and their values to detect duplicates/conflicts.
+        # However, the problem states: "Treat a duplicate `tps` key with the same value as malformed too."
+        # This implies we cannot simply aggregate; we must reject the entire line if any key appears more than once.
+        # Strategy: Use a set to track seen keys for this specific line.
+        seen_keys = set()
+        tps_value: Optional[float] = None
+        
+        valid_record = True
+        
+        for token in tokens:
+            if '=' not in token:
+                # This token is not a key=value pair. 
+                # The spec says "contains ... a tps=<value> field". It doesn't forbid other fields,
+                # but standard log parsing usually implies key=value format for metrics.
+                # However, strict key=value parsing suggests we only care about tokens with '='.
+                # Let's assume any token without '=' is ignored for key-value logic, 
+                # BUT if the line is meant to be strictly key=value pairs, this might be an issue.
+                # Re-reading: "after splitting on whitespace, it contains both event=decode and a tps=<value> field".
+                # It doesn't explicitly forbid other stuff, but usually these benchmarks are strict.
+                # Let's assume standard key=value parsing where we only process tokens with '='.
+                continue
+            
+            key, _, val_str = token.partition('=')
+            
+            if key in seen_keys:
+                # Duplicate key found. Spec says: "Treat a duplicate `tps` key with the same value as malformed too."
+                # This implies ANY duplicate key makes the line malformed.
+                valid_record = False
+                break
+            
+            seen_keys.add(key)
+            
+            if key == 'event':
+                if val_str != 'decode':
+                    valid_record = False
+                    # We don't break immediately because we might find a tps later, but since it's invalid,
+                    # we can stop processing this line. However, to be robust, let's just mark invalid.
+                    # Actually, if event is not 'decode', the line is invalid regardless of tps.
+                    break
+            elif key == 'tps':
+                try:
+                    tps_value = float(val_str)
+                except ValueError:
+                    valid_record = False
+                    break
+                
+                # Check for non-finite
+                if not isfinite(tps_value):
+                    valid_record = False
+                    break
+                
+                # Check for non-positive (zero or negative)
+                if tps_value <= 0:
+                    valid_record = False
+                    break
+        
+        if valid_record and tps_value is not None:
+            # Update stats
+            count += 1
+            sum_tps += tps_value
+            
+            if min_tps is None or tps_value < min_tps:
+                min_tps = tps_value
+            if max_tps is None or tps_value > max_tps:
+                max_tps = tps_value
+    
+    if count == 0:
+        return {
+            'count': 0,
+            'min_tps': None,
+            'max_tps': None,
+            'avg_tps': None
+        }
+    
+    avg_tps = round(sum_tps / count, 3)
+    
+    return {
+        'count': count,
+        'min_tps': min_tps,
+        'max_tps': max_tps,
+        'avg_tps': avg_tps
+    }
+
+
+if __name__ == "__main__":
+    # Demonstration lines covering various cases:
+    demo_lines = [
+        # 1. Valid record
+        "event=decode tps=100.5",
+        # 2. Another key=value field (should be ignored, still valid if event=decode and tps ok)
+        "event=decode tps=200.25 model=llama-7b",
+        # 3. Non-decode event
+        "event=prefill tps=500.0",
+        # 4. Malformed float (text instead of number)
+        "event=decode tps=abc",
+        # 5. NaN value
+        "event=decode tps=nan",
+        # 6. Duplicate key (malformed)
+        "event=decode tps=100 tps=100",
+        # 7. Non-string item
+        123,
+        # 8. Valid record requiring rounding (e.g., 100.12345 -> 100.123)
+        "event=decode tps=100.12345",
+    ]
+    
+    result = summarize_decode_speeds(demo_lines)
+    
+    print("Expected Summary for Demonstration:")
+    print(f"Count: {result['count']}")
+    print(f"Min TPS: {result['min_tps']}")
+    print(f"Max TPS: {result['max_tps']}")
+    print(f"Average TPS (rounded): {result['avg_tps']}")
+    
+    # Expected Calculation:
+    # Valid lines:
+    # 1. "event=decode tps=100.5" -> 100.5
+    # 2. "event=decode tps=200.25 model=llama-7b" -> 200.25
+    # 3. "event=prefill ..." -> Invalid (event != decode)
+    # 4. "event=decode tps=abc" -> Invalid (float error)
+    # 5. "event=decode tps=nan" -> Invalid (not finite)
+    # 6. "event=decode tps=100 tps=100" -> Invalid (duplicate key)
+    # 7. 123 -> Ignored (non-string)
+    # 8. "event=decode tps=100.12345" -> 100.12345 -> rounds to 100.123
+    
+    # Values: 100.5, 200.25, 100.12345
+    # Count: 3
+    # Min: 100.12345
+    # Max: 200.25
+    # Sum: 400.87345
+    # Avg: 133.62448333... -> round(133.62448333, 3) = 133.624
+    
+    print("\n--- Assertions for Common Incorrect Implementations ---")
+    
+    # Assertion 1: Check that duplicate keys (even with same value) are rejected.
+    # If an implementation simply updates the last value, it would count 100.0 twice or overwrite.
+    assert result['count'] == 3, "Failed: Duplicate keys should make the line malformed."
+    
+    # Assertion 2: Check that NaN and Inf are rejected.
+    assert result['min_tps'] == 100.12345, "Failed: NaN/Inf must be excluded from min/max."
+    
+    print("All assertions passed.")
+```
+
+[ Prompt: 134.2 t/s | Generation: 41.7 t/s ]
+
+
+Exiting...
