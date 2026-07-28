@@ -1,0 +1,97 @@
+
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b10110-8f5ab832c
+model      : /home/dilusha/llm-research/models/Qwen/Qwen3.6-35B-A3B-GGUF/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf
+ftype      : Q4_K - Medium
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> Summarize the following technical document. Focus on the experimental design, measurement methodology, limitations, and reproducibility implications.
+
+Technical document:
+
+Large language model inference on consumer hardware is constrained by a combination of memory capacity, memory bandwidth, compute throughput, software backend maturity, and workload shape. Unlike training, inference is often dominated by repeated matrix-vector operations during autoregressive decoding. During prompt processing ... (truncated)
+Based on the provided technical document, here is a summary focusing on experimental design, measurement methodology, limitations, and reproducibility implications.
+
+### 1. Experimental Design
+The framework advocates for a granular, tuple-based definition of experimental conditions to ensure precise isolation of variables.
+
+*   **Condition Definition:** A benchmark condition is defined as a tuple including: model file (with resolved path/hash), backend (CPU/CUDA/Vulkan), hardware label, context length, generation limit, prompt file, temperature, GPU layer count, llama.cpp build, and driver environment. Any change in these elements constitutes a new experimental condition.
+*   **Workload Variety:** To capture different inference patterns, the design includes five distinct workloads:
+    *   **Chat:** General explanatory response.
+    *   **Coding:** Structured reasoning and code production.
+    *   **Summarization:** Long prompts to stress prompt processing and context handling.
+    *   **Batch:** Multiple unrelated tasks in one prompt to test instruction separation.
+    *   **Agentic:** Simulated planning/reviewing without external tools.
+    *   **Fixed Prompts:** Prompts must be deterministic, versioned, and hashed to prevent accidental edits from skewing results.
+*   **Thermal/Power Contexts:** Researchers must explicitly choose between measuring **maximum achievable throughput** (controlled thermal/power, background processes killed) or **realistic interactive performance** (standard desktop settings, recording system load).
+*   **Failure as Data:** Failures (e.g., VRAM overflow, driver issues) are treated as valid data points to avoid survivorship bias. Run metadata must record status, error messages, and context.
+
+### 2. Measurement Methodology
+The methodology emphasizes separating prompt processing from decoding and preserving raw data over aggregated summaries.
+
+*   **Separation of Metrics:**
+    *   **Prompt Evaluation:** Measures parallel matrix-matrix operations.
+    *   **Decoding:** Measures autoregressive token generation (matrix-vector operations).
+    *   These must be measured separately due to different hardware utilization characteristics.
+*   **Key Metrics:**
+    *   Prompt evaluation time/tokens per second.
+    *   Decode evaluation time/generate tokens per second.
+    *   Time to First Token (TTFT): Recorded as null if not reliably available from the runtime; total generation time is measured externally.
+    *   Resource usage: RAM, VRAM, GPU power, and temperature.
+*   **Data Collection:**
+    *   **Raw Artifacts:** Full `stdout`/`stderr` from `llama.cpp` must be preserved. Processed CSVs are secondary derived artifacts.
+    *   **Resource Monitoring:** Sampling via `nvidia-smi` (GPU) and Linux interfaces (`/proc/stat`, etc.) for CPU/RAM. Missing data should be recorded as null, not cause failure.
+    *   **Token Counts:** Prompt token counts must be extracted from the inference runtime (model-specific tokenization), not estimated by character/word count.
+*   **Statistical Approach:**
+    *   Minimum of **three runs** per condition to reveal instability (thermal throttling, background processes).
+    *   **Median throughput** is preferred over mean to mitigate impact of outliers.
+    *   Raw runs are stored separately for re-parsing; aggregation is done post-hoc.
+
+### 3. Limitations
+The document acknowledges several inherent constraints and threats to validity:
+
+*   **Hardware Heterogeneity:** Consumer systems vary significantly in thermal behavior, power management, and memory configuration (e.g., RAM speed/channel count for CPU-only tests). GPU utilization metrics from `nvidia-smi` are sampled device-level indicators, not precise kernel efficiency measures.
+*   **Backend Complexity:** Comparing backends (CPU vs. CUDA vs. Vulkan) conflates hardware differences with software maturity, driver versions, and kernel optimization levels.
+*   **Quantization Trade-offs:** Lower precision (e.g., Q4) reduces memory but does not guarantee linear throughput gains due to dequantization overhead and kernel support. Throughput does not equate to model quality.
+*   **Sampling Variability:** Non-deterministic sampling can alter generated token counts and content, making direct comparisons difficult unless fixed generation limits or deterministic decoding are used.
+*   **Generalizability:** Single prompts may not represent broad real-world use. Results from a small set of devices should not be overgeneralized.
+*   **Metric Interpretation:** "Decode tokens per second" is more comparable across varying output lengths than "total wall-clock time," but total time remains relevant for user experience.
+
+### 4. Reproducibility Implications
+Reproducibility is achieved through strict metadata recording, raw data preservation, and version control.
+
+*   **Metadata Requirements:** Every run must capture:
+    *   Hardware details: CPU model, core/thread count, RAM capacity, GPU model, VRAM, driver version, OS.
+    *   Software details: Backend binary path, `llama.cpp` build, driver version, runtime parameters.
+    *   Experiment details: Model alias, resolved model path, prompt hash/file path, context length, temperature, run index, timestamp.
+*   **Artifact Hierarchy:**
+    1.  **Raw Run Directories:** Primary source (containing exact runtime output).
+    2.  **Metadata Files:** Configuration and status.
+    3.  **Monitor CSVs:** Supporting evidence.
+    4.  **Processed CSV:** Derived artifact for analysis; must be regenerable from raw data.
+*   **Version Control:** Prompts and model files must be versioned or hashed. Model aliases are insufficient; resolved paths are required.
+*   **Transparency:** The framework is designed to be simple (shell scripts/Python stdlib) to ensure inspectability. It exposes variability rather than hiding it, allowing researchers to trace any result back to its specific configuration and hardware snapshot.
+
+[ Prompt: 100.2 t/s | Generation: 30.0 t/s ]
+
+
+Exiting...
