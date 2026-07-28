@@ -1,0 +1,207 @@
+Input prompt
+
+You are simulating a senior coding-agent design review without external tools, internet access, shell commands, package installation, or file-system inspection. Work only from the specification and artifacts below. Be concrete enough that another engineer could implement and test the design.
+
+Project:
+A research project needs a command-line llama.cpp benchmark runner supporting CPU, CUDA, and Vulkan; model aliases from a configuration file; fixed workload prompts; performance output; hardware metadata; resource monitoring; and one metadata file per run. Raw output must remain available for manual audit. The runner must distinguish a failed model run from missing optional monitoring data.
+
+Existing constraints:
+* Each condition is repeated three times and compared manually using each run's `response.txt`/raw response plus metrics.
+* The default context is 4096, generation limit 256, temperature 0.7, and CPU thread count 1; a workload may override context explicitly.
+* Workloads are `chat`, `batch`, `coding`, `summarization`, `agentic`, and `world_knowledge`.
+* The runner must not mix results if model file, backend, hardware label, context, generation limit, prompt, temperature, GPU layers, build, or driver environment changes.
+* Monitors may be unavailable or sampled sparsely. A model process may fail after creating partial output.
+
+Required deliverables:
+1. Requirements and invariants: list inputs, artifacts, success/failure states, and the experimental identity tuple. Identify at least one ambiguity that must be resolved before implementation.
+2. State-machine workflow: describe the lifecycle from validation through launch, monitoring, process exit, and finalization, including what happens on timeout, OOM, malformed performance output, and monitor failure.
+3. Auditable design: propose shell/Python component boundaries, a metadata schema, atomic-write or partial-file conventions, and how to preserve stdout/stderr and the exact prompt used.
+4. Analysis integrity: explain how to prevent a failed run or variable generated-token count from producing a misleading throughput comparison, and how a parser should treat unknown llama.cpp output formats.
+5. Test plan: provide at least six tests, including one simulated backend failure, one missing monitor, one prompt containing spaces/newlines, one partial output, and one changed prompt hash.
+6. Pre-merge review: name the three highest-risk design flaws in your proposal and the concrete changes that would fix them.
+
+Use these exact headings: Requirements and Invariants; State Machine; Auditable Design; Analysis Integrity; Test Plan; Pre-merge Review. Keep the design implementation-oriented and avoid claiming that a metric is available if the specification does not guarantee it.
+
+Final model response
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b10110-8f5ab832c
+model      : /home/dilusha/llm-research/models/Gemma/gemma-4-E2B-it-GGUF/gemma-4-E2B-it-Q4_K_M.gguf
+ftype      : Q4_K - Medium
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> You are simulating a senior coding-agent design review without external tools, internet access, shell commands, package installation, or file-system inspection. Work only from the specification and artifacts below. Be concrete enough that another engineer could implement and test the design.
+
+Project:
+A research project needs a command-line llama.cpp benchmark runner supporting CPU, CUDA, and Vulkan; model aliases from a configuration file; fixed workload prompts; performance output; hardware me ... (truncated)
+## Requirements and Invariants
+
+**Inputs:**
+1. Model Alias configuration file (defines model loading).
+2. Workload specification (defines the workload type and potentially context override).
+3. Fixed workload prompts (the actual input data).
+4. Hardware metadata (CPU/CUDA/Vulkan context, hardware labels).
+5. Runtime configuration (context, generation limit, temperature, CPU thread count).
+6. Model execution artifacts (raw output, performance metrics, hardware monitoring data).
+
+**Artifacts:**
+1. `response.txt` (Raw model output).
+2. Performance metrics (throughput, memory usage, etc.).
+3. Hardware metadata.
+4. Run-specific metadata file (one per run).
+
+**Success/Failure States:**
+* **Success:** A complete, verifiable run with all required metrics and raw output is generated, and the run is distinguishable from failure states.
+* **Failure:** Occurs if a required component fails, if monitoring data is missing, or if a critical process fails (e.g., OOM, process termination).
+* **Distinguished Failure:** A failure state must be clearly differentiated from missing optional monitoring data.
+
+**Experimental Identity Tuple:**
+The unique identifier for a single benchmark run must be determinable and reproducible. This tuple must include: (Model Alias, Backend, Hardware Label, Context, Generation Limit, Temperature, CPU Threads, Workload, Prompt Hash, Run Timestamp).
+
+**Ambiguity to be Resolved:**
+The specification states that the runner must distinguish a failed model run from missing optional monitoring data. It does not explicitly define the threshold or mechanism for distinguishing these.
+* **Resolution Needed:** Define the exact condition under which a run is considered "failed" (e.g., non-zero exit code, failure to produce output, or inability to read required metrics) versus a run where optional monitoring data is simply absent or sparse.
+
+## State Machine
+
+**Initial State:** Configuration loading and validation.
+
+**Phase 1: Validation & Setup**
+1. **Load Configuration:** Load model aliases and runtime defaults.
+2. **Validate Inputs:** Check for existence of prompts, model files, and required hardware context.
+3. **Determine Identity:** Construct the Experimental Identity Tuple.
+4. **Initialize Run State:** Create the run-specific metadata file structure.
+
+**Phase 2: Execution**
+1. **Pre-Execution Check:** Verify all required inputs for the chosen backend (CPU/CUDA/Vulkan).
+2. **Launch Model:** Execute the `llama.cpp` process with specified parameters (context, limit, temperature, workload, prompt).
+3. **Monitor:** Start concurrent monitoring of the process execution and system resources (memory, CPU).
+
+**Phase 3: Post-Execution & Finalization**
+1. **Wait for Exit:** Wait for the model process to terminate.
+2. **Process Result Check:** Check the exit code.
+    * **If Exit Code indicates Failure (e.g., non-zero):** Mark run as FAILED. Record error details.
+    * **If Process Failed (OOM, Signal):** Mark run as FAILED. Record failure reason.
+3. **Artifact Collection:**
+    * Capture raw output (`response.txt`).
+    * Capture performance metrics.
+    * Capture hardware metadata snapshot.
+4. **Integrity Check:** Verify that all required data points (including required monitoring data) are present.
+    * **If Required Data Missing (but no process failure):** Mark run as WARNING/PARTIAL (missing optional monitoring).
+    * **If All Data Present:** Mark run as SUCCESS.
+5. **Finalization:** Write the complete, audited run metadata file.
+
+**Timeout/Error Handling:**
+* **Timeout:** If the process exceeds a defined timeout, terminate it, mark as FAILED, and record timeout event in metadata.
+* **OOM:** If the process triggers an Out-Of-Memory error, terminate it, mark as FAILED, and record OOM event.
+* **Malformed Output:** If the parser for `response.txt` fails during post-processing, mark as FAILED, retaining the raw output for manual audit.
+* **Monitor Failure:** If a monitoring thread fails to report data, the run status is marked based on the presence of *required* data. Missing optional data results in a warning, not a hard failure, unless the missing data was critical for the final success criteria.
+
+## Auditable Design
+
+**Component Boundaries:**
+1. **Configuration Manager:** Handles loading and validating model aliases and runtime defaults.
+2. **Runner Orchestrator (Main Logic):** Manages the state machine flow, orchestrates launching, and manages timeouts.
+3. **Process Executor:** Responsible for spawning the `llama.cpp` process with correct environment variables and input redirection.
+4. **Monitor Agent:** Responsible for polling or receiving data from system/process monitoring tools to gather performance metrics.
+5. **Artifact Writer:** Responsible for atomically writing all collected data (raw output, metrics, metadata) to disk.
+
+**Metadata Schema (Run-Specific File):**
+The metadata file must be a structured format (e.g., JSON or YAML) ensuring determinism.
+
+```json
+{
+  "run_id": "UUID_or_Hash",
+  "experimental_identity": {
+    "model_alias": "...",
+    "backend": "CPU|CUDA|Vulkan",
+    "hardware_label": "...",
+    "context": 4096,
+    "generation_limit": 256,
+    "temperature": 0.7,
+    "cpu_threads": 1,
+    "workload": "chat",
+    "prompt_hash": "SHA256_of_prompt",
+    "timestamp": "..."
+  },
+  "status": "SUCCESS" | "FAILED" | "PARTIAL_WARNING",
+  "execution_details": {
+    "exit_code": 0,
+    "error_message": null,
+    "failure_reason": null
+  },
+  "raw_output_path": "path/to/response.txt",
+  "metrics": {
+    "throughput": 0.0,
+    "memory_usage_mib": 0,
+    "gpu_layers_used": 0,
+    "monitor_data_available": true // Explicit flag for monitoring status
+  },
+  "artifacts_checksums": {
+    "raw_output": "SHA256_of_response.txt"
+  }
+}
+```
+
+**Atomic-Write/Partial-File Conventions:**
+1. **Raw Output Preservation:** `response.txt` (or equivalent) must be written immediately to a unique, temporary location. Only upon successful completion of all post-processing should it be finalized into the metadata structure.
+2. **Metadata Atomicity:** The final metadata file must be written atomically (e.g., write to a temporary file, then rename/move to the final location). If an error occurs during writing, the original file remains untouched.
+3. **Partial Data:** If monitoring fails, the system must explicitly record the missing data (e.g., `monitor_data_available: false`) rather than omitting the key, ensuring the distinction between missing optional data and hard failure is explicit.
+
+**Stdout/Stderr/Prompt Preservation:**
+* **Stdout/Stderr:** All streams from the `llama.cpp` process must be captured directly into the run-specific artifact directory, timestamped, and stored alongside the final metadata.
+* **Prompt:** The exact input prompt used must be stored directly in the metadata structure (as a string) and its cryptographic hash must be stored as part of the `experimental_identity`.
+
+## Analysis Integrity
+
+**Preventing Misleading Throughput Comparison:**
+Throughput must be calculated using only data confirmed to be generated by the model execution, excluding any data derived from failed monitoring or parsing steps.
+1. **Source of Truth:** Throughput calculation must rely solely on the timing data captured *during* the execution phase (Phase 2/3) and the token counts derived from the raw output parsing.
+2. **Failure Gate:** If the final status is `FAILED`, the calculated throughput is marked as invalid or set to a sentinel value (e.g., -1) in the metadata. The comparison logic must filter out any runs marked `FAILED`.
+
+**Handling Unknown Llama.cpp Output Formats:**
+The parser must adopt a defensive, strict parsing strategy:
+1. **Schema Validation:** The parser must attempt to match the raw output against an expected structure (if one exists) or a known format.
+2. **Fallback Strategy:** If parsing fails (e.g., output is corrupted or in an unexpected format), the parser must *not* attempt to guess the result. Instead, it must treat the entire raw output as an unparseable artifact.
+3. **Error Reporting:** If parsing fails, the resulting state must be marked as `FAILED` (or `PARTIAL_WARNING` if output was present but unreadable) and the raw output must be preserved for manual audit, ensuring that an erroneous metric calculation does not mask the input error.
+
+## Test Plan
+
+1. **Baseline Success:** Run a standard `chat` workload with default settings (CPU, 4096 context). Verify all required artifacts are present and the status is `SUCCESS`.
+2. **Simulated Backend Failure:** Configure the runner to attempt execution using a known incompatible backend (e.g., attempting CUDA execution when only CPU support is configured, or simulating an invalid model file path). Verify the run status is `FAILED` and the error is recorded.
+3. **Missing Monitor Data:** Run a successful benchmark, but simulate the Monitor Agent failing to report memory usage for one specific run. Verify the run status is `PARTIAL_WARNING` (or `SUCCESS` if monitoring is optional) and the `metrics.monitor_data_available` flag correctly reflects the absence of data.
+4. **Prompt with Special Characters:** Run a `summarization` workload using a prompt containing embedded spaces and newlines. Verify that the prompt is correctly captured in the metadata and the raw output is preserved without corruption.
+5. **Partial Output Scenario:** Configure the model to exit abruptly mid-generation (simulating a process failure after partial output generation). Verify the system correctly identifies the process failure and marks the run as `FAILED`, retaining the partial output for audit.
+6. **Prompt Hash Change:** Run the same workload twice, once with prompt $P_1$ and once with prompt $P_2$ (where $P_1 \neq P_2$). Verify that the resulting `experimental_identity.prompt_hash` is unique for each run, proving the prompt was correctly incorporated into the identity.
+
+## Pre-merge Review
+
+**Highest-Risk Design Flaw 1: Ambiguity in Failure vs. Missing Data Classification**
+* **Flaw:** The distinction between a hard failure (process crash, OOM) and missing optional monitoring data is not rigidly defined, risking misclassification and inaccurate reporting of operational health.
+* **Fix:** Enforce a strict hierarchy in the State Machine: A run is **FAILED** only if the model process exited with an error code or crashed. A run is **PARTIAL\_WARNING** only if the process succeeded but optional monitoring data is absent. The `metrics.monitor_data_available` flag must explicitly capture the absence of optional data, regardless of success status.
+
+**Highest-Risk Design Flaw 2: Integrity of Raw Output vs. Metrics**
+* **Flaw:** If the output parser fails (leading to a `FAILED` state), the system might incorrectly discard performance metrics or fail to retain the raw output, violating the requirement that "Raw output must remain available for manual audit."
+* **Fix:** Implement the Artifact Writer to prioritize the preservation of the raw output file and its checksum. The failure status must be determined *after* artifact collection. If the parsing fails, the status is `FAILED`, but the raw output and its checksum are still stored, fulfilling the audit requirement.
+
+**Highest-Risk Design Flaw 3: Determinism of Environment Variables vs. Runtime Overrides**
+* **Flaw:** The runner relies on a complex interplay of fixed defaults, configuration file aliases, and runtime overrides (e.g., workload overrides context). This complexity increases the risk of non-deterministic identity generation, violating the requirement that the identity tuple must be perfectly reproducible.
+* **Fix:** The Runner Orchestrator must establish a strict, sequential application order for all configuration parameters. All inputs (aliases, defaults, runtime overrides) must be explicitly mapped into the `experimental_identity` tuple *before* execution begins, ensuring that the resulting tuple is a direct, unambiguous reflection of the exact environment used for the benchmark.
