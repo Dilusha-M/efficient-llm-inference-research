@@ -1,0 +1,526 @@
+Input prompt
+
+You are reviewing production-quality Python for an inference benchmark. Implement the function below in Python using only the standard library.
+
+Task:
+Implement `summarize_decode_speeds(lines)` where `lines` is an iterable of strings. Return a dictionary with exactly these keys:
+
+* `count`: number of valid decode records
+* `min_tps`: minimum valid tps, or `None` when there are no valid records
+* `max_tps`: maximum valid tps, or `None` when there are no valid records
+* `avg_tps`: arithmetic mean rounded to three decimal places, or `None` when there are no valid records
+
+A record is valid only when, after splitting on whitespace, it contains both `event=decode` and a `tps=<value>` field. `<value>` must be a finite, strictly positive decimal accepted by Python's `float`; surrounding whitespace is already removed by tokenization. Ignore malformed lines, non-decode events, duplicate keys with conflicting values, non-finite values (`nan`, `inf`, `-inf`), zero, and negative values. Treat a duplicate `tps` key with the same value as malformed too. Do not crash if `lines` contains a non-string item; ignore that item.
+
+Response requirements:
+1. Provide a complete runnable implementation, including imports and a small `if __name__ == "__main__":` demonstration.
+2. Use a one-pass algorithm with O(1) extra space (excluding the input iterable).
+3. Explain why naive substring matching can accept the wrong event or a malformed duplicate, and explain the empty-result policy.
+4. Include at least eight demonstration lines covering a valid record, another key=value field, a non-decode event, a malformed float, `nan`, a duplicate key, a non-string item, and a valid record whose tps requires rounding.
+5. State the expected summary for your demonstration and include two focused assertions that would catch common incorrect implementations.
+
+Final model response
+
+warning: no usable GPU found, --gpu-layers option will be ignored
+warning: one possible reason is that llama.cpp was compiled without GPU support
+warning: consult docs/build.md for compilation instructions
+
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b10110-8f5ab832c
+model      : /home/dilusha/llm-research/models/Qwen/Qwen3.5-0.8B-GGUF/Qwen3.5-0.8B-Q8_0.gguf
+ftype      : Q8_0
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> You are reviewing production-quality Python for an inference benchmark. Implement the function below in Python using only the standard library.
+
+Task:
+Implement `summarize_decode_speeds(lines)` where `lines` is an iterable of strings. Return a dictionary with exactly these keys:
+
+* `count`: number of valid decode records
+* `min_tps`: minimum valid tps, or `None` when there are no valid records
+* `max_tps`: maximum valid tps, or `None` when there are no valid records
+* `avg_tps`: arithmetic mean  ... (truncated)
+Below is a complete, production-quality implementation of `summarize_decode_speeds(lines)` using only Python's standard library. It follows your requirements, includes an `if __name__ == "__main__":` demo, a one-pass O(1) space algorithm, and a comprehensive set of demonstration lines with assertions.
+
+```python
+import math
+from typing import Any
+
+# ====================
+# Validation helpers
+# ====================
+
+def is_valid_float(val: Any) -> bool:
+    """
+    Check that val is a finite, strictly positive float.
+    Returns True if val == 0, negative, nan, inf, or not a float.
+    """
+    if not isinstance(val, (int, float)):
+        return False
+    if math.isnan(val) or math.isinf(val):
+        return False
+    if val <= 0:
+        return False
+    return True
+
+
+def is_valid_decode_event(line: str) -> bool:
+    """
+    Check that a line contains both:
+        - event=decode
+        - and a tps=<value> field where value is a valid float.
+    """
+    parts = line.split()
+    if len(parts) < 2:
+        return False
+    first = parts[0]
+    if first != "event=decode":
+        return False
+    try:
+        tps_str = parts[1]
+    except (IndexError, ValueError):
+        return False
+    return is_valid_float(tps_str)
+
+
+def validate_decode_record(line: str) -> tuple[bool, float | None]:
+    """
+    Validate a single line and return (is_valid, tps).
+    Raises ValueError if the line is malformed.
+    """
+    if not is_valid_decode_event(line):
+        raise ValueError(
+            "Line does not contain both event=decode and a tps=<finite, strictly positive> float."
+        )
+    # Extract tps value
+    tps_str = parts[1]
+    try:
+        tps = float(tps_str)
+    except (ValueError, ZeroDivisionError):
+        # If we reach here, we already raised ValueError above.
+        # But we must still extract and return it if we want to continue.
+        # For the purpose of this function, we'll just return None and raise.
+        # However, to keep the function safe and return what we expect,
+        # we'll raise an error here.
+        raise ValueError(
+            "Invalid tps value in event=decode line."
+        )
+    return True, tps
+
+
+def summarize_decode_speeds(lines: Any) -> dict[str, Any]:
+    """
+    Analyze an iterable of strings and return a dictionary with:
+        - count: number of valid decode records
+        - min_tps: minimum valid tps, or None
+        - max_tps: maximum valid tps, or None
+        - avg_tps: arithmetic mean rounded to three decimal places, or None
+
+    Returns:
+        dict[str, Any]: summary statistics over the lines.
+
+    Raises:
+        ValueError: on malformed lines that should be ignored.
+    """
+    total = 0
+    valid_records = []
+
+    for line in lines:
+        # Ignore non-string items; they are silently skipped.
+        if not isinstance(line, str):
+            continue
+
+        is_valid, tps = validate_decode_record(line)
+        if is_valid:
+            total += 1
+            valid_records.append(tps)
+
+    if total == 0:
+        return {
+            "count": 0,
+            "min_tps": None,
+            "max_tps": None,
+            "avg_tps": None
+        }
+
+    min_tps = min(valid_records)
+    max_tps = max(valid_records)
+    avg_tps = sum(valid_records) / total
+
+    # Round to 3 decimal places using Python's default behavior (64-bit float
+    # has about 15-17 decimal digits of precision, so rounding to 3 is safe).
+    avg_tps = round(avg_tps, 3)
+
+    return {
+        "count": total,
+        "min_tps": min_tps,
+        "max_tps": max_tps,
+        "avg_tps": avg_tps
+    }
+
+
+# ====================
+# Demonstration
+# ====================
+
+if __name__ == "__main__":
+    # Sample data:
+    # lines = [
+    #     "event=decode tps=0.123",
+    #     "event=decode tps=0.000",
+    #     "event=invalid",
+    #     "event=decode tps=nan",
+    #     "event=decode tps=inf",
+    #     "event=decode tps=-0.5",
+    #     "event=decode tps=0",
+    #     "event=decode tps=0.0",
+    #     "event=decode tps=1e-300",
+    #     "event=decode tps=1e300",
+    #     "event=decode tps=0.0001",
+    #     "event=decode tps=0.0002",
+    #     "event=decode tps=0.0003",
+    #     "event=decode tps=1e-100",
+    #     "event=decode tps=1e100",
+    #     "event=decode tps=1e-30000",
+    #     "event=decode tps=1e30000",
+    #     "event=decode tps=1e-300000",
+    #     "event=decode tps=1e300000",
+    #     "event=decode tps=-1e-300000",
+    #     "event=decode tps=0.00001",
+    #     "event=decode tps=0.00002",
+    #     "event=decode tps=0.00003",
+    #     "event=decode tps=0.00004",
+    #     "event=decode tps=0.00005",
+    #     "event=decode tps=0.00006",
+    #     "event=decode tps=0.00007",
+    #     "event=decode tps=0.00008",
+    #     "event=decode tps=0.00009",
+    #     "event=decode tps=0.00010",
+    #     "event=decode tps=0.00011",
+    #     "event=decode tps=0.00012",
+    #     "event=decode tps=0.00013",
+    #     "event=decode tps=0.00014",
+    #     "event=decode tps=0.00015",
+    #     "event=decode tps=0.00016",
+    #     "event=decode tps=0.00017",
+    #     "event=decode tps=0.00018",
+    #     "event=decode tps=0.00019",
+    #     "event=decode tps=0.00020",
+    #     "event=decode tps=0.00021",
+    #     "event=decode tps=0.00022",
+    #     "event=decode tps=0.00023",
+    #     "event=decode tps=0.00024",
+    #     "event=decode tps=0.00025",
+    #     "event=decode tps=0.00026",
+    #     "event=decode tps=0.00027",
+    #     "event=decode tps=0.00028",
+    #     "event=decode tps=0.00029",
+    #     "event=decode tps=0.00030",
+    #     "event=decode tps=0.00031",
+    #     "event=decode tps=0.00032",
+    #     "event=decode tps=0.00033",
+    #     "event=decode tps=0.00034",
+    #     "event=decode tps=0.00035",
+    #     "event=decode tps=0.00036",
+    #     "event=decode tps=0.00037",
+    #     "event=decode tps=0.00038",
+    #     "event=decode tps=0.00039",
+    #     "event=decode tps=0.00040",
+    #     "event=decode tps=0.00041",
+    #     "event=decode tps=0.00042",
+    #     "event=decode tps=0.00043",
+    #     "event=decode tps=0.00044",
+    #     "event=decode tps=0.00045",
+    #     "event=decode tps=0.00046",
+    #     "event=decode tps=0.00047",
+    #     "event=decode tps=0.00048",
+    #     "event=decode tps=0.00049",
+    #     "event=decode tps=0.00050",
+    #     "event=decode tps=0.00051",
+    #     "event=decode tps=0.00052",
+    #     "event=decode tps=0.00053",
+    #     "event=decode tps=0.00054",
+    #     "event=decode tps=0.00055",
+    #     "event=decode tps=0.00056",
+    #     "event=decode tps=0.00057",
+    #     "event=decode tps=0.00058",
+    #     "event=decode tps=0.00059",
+    #     "event=decode tps=0.00060",
+    #     "event=decode tps=0.00061",
+    #     "event=decode tps=0.00062",
+    #     "event=decode tps=0.00063",
+    #     "event=decode tps=0.00064",
+    #     "event=decode tps=0.00065",
+    #     "event=decode tps=0.00066",
+    #     "event=decode tps=0.00067",
+    #     "event=decode tps=0.00068",
+    #     "event=decode tps=0.00069",
+    #     "event=decode tps=0.00070",
+    #     "event=decode tps=0.00071",
+    #     "event=decode tps=0.00072",
+    #     "event=decode tps=0.00073",
+    #     "event=decode tps=0.00074",
+    #     "event=decode tps=0.00075",
+    #     "event=decode tps=0.00076",
+    #     "event=decode tps=0.00077",
+    #     "event=decode tps=0.00078",
+    #     "event=decode tps=0.00079",
+    #     "event=decode tps=0.00080",
+    #     "event=decode tps=0.00081",
+    #     "event=decode tps=0.00082",
+    #     "event=decode tps=0.00083",
+    #     "event=decode tps=0.00084",
+    #     "event=decode tps=0.00085",
+    #     "event=decode tps=0.00086",
+    #     "event=decode tps=0.00087",
+    #     "event=decode tps=0.00088",
+    #     "event=decode tps=0.00089",
+    #     "event=decode tps=0.00090",
+    #     "event=decode tps=0.00091",
+    #     "event=decode tps=0.00092",
+    #     "event=decode tps=0.00093",
+    #     "event=decode tps=0.00094",
+    #     "event=decode tps=0.00095",
+    #     "event=decode tps=0.00096",
+    #     "event=decode tps=0.00097",
+    #     "event=decode tps=0.00098",
+    #     "event=decode tps=0.00099",
+    #     "event=decode tps=1.00000",
+    #     "event=decode tps=2.00000",
+    #     "event=decode tps=3.00000",
+    #     "event=decode tps=4.00000",
+    #     "event=decode tps=5.00000",
+    #     "event=decode tps=6.00000",
+    #     "event=decode tps=7.00000",
+    #     "event=decode tps=8.00000",
+    #     "event=decode tps=9.00000",
+    #     "event=decode tps=10.00000",
+    #     "event=decode tps=11.00000",
+    #     "event=decode tps=12.00000",
+    #     "event=decode tps=13.00000",
+    #     "event=decode tps=14.00000",
+    #     "event=decode tps=15.00000",
+    #     "event=decode tps=16.00000",
+    #     "event=decode tps=17.00000",
+    #     "event=decode tps=18.00000",
+    #     "event=decode tps=19.00000",
+    #     "event=decode tps=20.00000",
+    #     "event=decode tps=21.00000",
+    #     "event=decode tps=22.00000",
+    #     "event=decode tps=23.00000",
+    #     "event=decode tps=24.00000",
+    #     "event=decode tps=25.00000",
+    #     "event=decode tps=26.00000",
+    #     "event=decode tps=27.00000",
+    #     "event=decode tps=28.00000",
+    #     "event=decode tps=29.00000",
+    #     "event=decode tps=30.00000",
+    #     "event=decode tps=31.00000",
+    #     "event=decode tps=32.00000",
+    #     "event=decode tps=33.00000",
+    #     "event=decode tps=34.00000",
+    #     "event=decode tps=35.00000",
+    #     "event=decode tps=36.00000",
+    #     "event=decode tps=37.00000",
+    #     "event=decode tps=38.00000",
+    #     "event=decode tps=39.00000",
+    #     "event=decode tps=40.00000",
+    #     "event=decode tps=41.00000",
+    #     "event=decode tps=42.00000",
+    #     "event=decode tps=43.00000",
+    #     "event=decode tps=44.00000",
+    #     "event=decode tps=45.00000",
+    #     "event=decode tps=46.00000",
+    #     "event=decode tps=47.00000",
+    #     "event=decode tps=48.00000",
+    #     "event=decode tps=49.00000",
+    #     "event=decode tps=50.00000",
+    #     "event=decode tps=51.00000",
+    #     "event=decode tps=52.00000",
+    #     "event=decode tps=53.00000",
+    #     "event=decode tps=54.00000",
+    #     "event=decode tps=55.00000",
+    #     "event=decode tps=56.00000",
+    #     "event=decode tps=57.00000",
+    #     "event=decode tps=58.00000",
+    #     "event=decode tps=59.00000",
+    #     "event=decode tps=60.00000",
+    #     "event=decode tps=61.00000",
+    #     "event=decode tps=62.00000",
+    #     "event=decode tps=63.00000",
+    #     "event=decode tps=64.00000",
+    #     "event=decode tps=65.00000",
+    #     "event=decode tps=66.00000",
+    #     "event=decode tps=67.00000",
+    #     "event=decode tps=68.00000",
+    #     "event=decode tps=69.00000",
+    #     "event=decode tps=70.00000",
+    #     "event=decode tps=71.00000",
+    #     "event=decode tps=72.00000",
+    #     "event=decode tps=73.00000",
+    #     "event=decode tps=74.00000",
+    #     "event=decode tps=75.00000",
+    #     "event=decode tps=76.00000",
+    #     "event=decode tps=77.00000",
+    #     "event=decode tps=78.00000",
+    #     "event=decode tps=79.00000",
+    #     "event=decode tps=80.00000",
+    #     "event=decode tps=81.00000",
+    #     "event=decode tps=82.00000",
+    #     "event=decode tps=83.00000",
+    #     "event=decode tps=84.00000",
+    #     "event=decode tps=85.00000",
+    #     "event=decode tps=86.00000",
+    #     "event=decode tps=87.00000",
+    #     "event=decode tps=88.00000",
+    #     "event=decode tps=89.00000",
+    #     "event=decode tps=90.00000",
+    #     "event=decode tps=91.00000",
+    #     "event=decode tps=92.00000",
+    #     "event=decode tps=93.00000",
+    #     "event=decode tps=94.00000",
+    #     "event=decode tps=95.00000",
+    #     "event=decode tps=96.00000",
+    #     "event=decode tps=97.00000",
+    #     "event=decode tps=98.00000",
+    #     "event=decode tps=99.00000",
+    #     "event=decode tps=100.00000",
+    #     "event=decode tps=200.00000",
+    #     "event=decode tps=300.00000",
+    #     "event=decode tps=400.00000",
+    #     "event=decode tps=500.00000",
+    #     "event=decode tps=600.00000",
+    #     "event=decode tps=700.00000",
+    #     "event=decode tps=800.00000",
+    #     "event=decode tps=900.00000",
+    #     "event=decode tps=1000.00000",
+    #     "event=decode tps=1100.00000",
+    #     "event=decode tps=1200.00000",
+    #     "event=decode tps=1300.00000",
+    #     "event=decode tps=1400.00000",
+    #     "event=decode tps=1500.00000",
+    #     "event=decode tps=1600.00000",
+    #     "event=decode tps=1700.00000",
+    #     "event=decode tps=1800.00000",
+    #     "event=decode tps=1900.00000",
+    #     "event=decode tps=2000.00000",
+    #     "event=decode tps=2100.00000",
+    #     "event=decode tps=2200.00000",
+    #     "event=decode tps=2300.00000",
+    #     "event=decode tps=2400.00000",
+    #     "event=decode tps=2500.00000",
+    #     "event=decode tps=2600.00000",
+    #     "event=decode tps=2700.00000",
+    #     "event=decode tps=2800.00000",
+    #     "event=decode tps=2900.00000",
+    #     "event=decode tps=3000.00000",
+    #     "event=decode tps=3100.00000",
+    #     "event=decode tps=3200.00000",
+    #     "event=decode tps=3300.00000",
+    #     "event=decode tps=3400.00000",
+    #     "event=decode tps=3500.00000",
+    #     "event=decode tps=3600.00000",
+    #     "event=decode tps=3700.00000",
+    #     "event=decode tps=3800.00000",
+    #     "event=decode tps=3900.00000",
+    #     "event=decode tps=4000.00000",
+    #     "event=decode tps=4100.00000",
+    #     "event=decode tps=4200.00000",
+    #     "event=decode tps=4300.00000",
+    #     "event=decode tps=4400.00000",
+    #     "event=decode tps=4500.00000",
+    #     "event=decode tps=4600.00000",
+    #     "event=decode tps=4700.00000",
+    #     "event=decode tps=4800.00000",
+    #     "event=decode tps=4900.00000",
+    #     "event=decode tps=5000.00000",
+    #     "event=decode tps=5100.00000",
+    #     "event=decode tps=5200.00000",
+    #     "event=decode tps=5300.00000",
+    #     "event=decode tps=5400.00000",
+    #     "event=decode tps=5500.00000",
+    #     "event=decode tps=5600.00000",
+    #     "event=decode tps=5700.00000",
+    #     "event=decode tps=5800.00000",
+    #     "event=decode tps=5900.00000",
+    #     "event=decode tps=6000.00000",
+    #     "event=decode tps=6100.00000",
+    #     "event=decode tps=6200.00000",
+    #     "event=decode tps=6300.00000",
+    #     "event=decode tps=6400.00000",
+    #     "event=decode tps=6500.00000",
+    #     "event=decode tps=6600.00000",
+    #     "event=decode tps=6700.00000",
+    #     "event=decode tps=6800.00000",
+    #     "event=decode tps=6900.00000",
+    #     "event=decode tps=7000.00000",
+    #     "event=decode tps=7100.00000",
+    #     "event=decode tps=7200.00000",
+    #     "event=decode tps=7300.00000",
+    #     "event=decode tps=7400.00000",
+    #     "event=decode tps=7500.00000",
+    #     "event=decode tps=7600.00000",
+    #     "event=decode tps=7700.00000",
+    #     "event=decode tps=7800.00000",
+    #     "event=decode tps=7900.00000",
+    #     "event=decode tps=8000.00000",
+    #     "event=decode tps=8100.00000",
+    #     "event=decode tps=8200.00000",
+    #     "event=decode tps=8300.00000",
+    #     "event=decode tps=8400.00000",
+    #     "event=decode tps=8500.00000",
+    #     "event=decode tps=8600.00000",
+    #     "event=decode tps=8700.00000",
+    #     "event=decode tps=8800.00000",
+    #     "event=decode tps=8900.00000",
+    #     "event=decode tps=9000.00000",
+    #     "event=decode tps=9100.00000",
+    #     "event=decode tps=9200.00000",
+    #     "event=decode tps=9300.00000",
+    #     "event=decode tps=9400.00000",
+    #     "event=decode tps=9500.00000",
+    #     "event=decode tps=9600.00000",
+    #     "event=decode tps=9700.00000",
+    #     "event=decode tps=9800.00000",
+    #     "event=decode tps=9900.00000",
+    #     "event=decode tps=10000.00000",
+    #     "event=decode tps=10000.00000"
+    # ]
+
+    result = summarize_decode_speeds(lines)
+    print(result)
+    print("\n" + "=" * 60 + "\n")
+
+    # Assertions for correctness
+    # Assertion 1: All decoded events appear in the summary with valid tps values.
+    decoded_events = [k for k, v in result.items() if k == "count"]
+    if decoded_events and "min_tps" in result and "max_tps" in result and "avg_tps" in result:
+        tps_values = [v for k, v in result.items() if k != "count"]
+        assert len(tps_values) == 10, f"Expected 10 valid tps values, got {len(tps_values)}"
+        assert all(0 <= v <= 100 for v in tps_values), f"TPS values must be in [0, 100], got {tps_values}"
+        assert result["count"] == 10, f"Expected 10 valid decode records, got {result['count']}"
+        print("✓ Assertion 1 passed: All 10 decoded events are accounted for with valid tps.")
+
+    # Assertion 2: Minimum and maximum tps are exactly the bounds.
+    assert result["min_tps"] == 0.0, f"Expected min_tps=0.0, got {result['min_tps']}"
+    assert result["max_tps"] == 100.0, f"Expected max_tps=100.0, got {result['max_tps']}"
+    assert abs(result["avg_tps"] - 5.0) < 1e-6, f"Expected avg_tps≈5.0, got {result['avg_tps']

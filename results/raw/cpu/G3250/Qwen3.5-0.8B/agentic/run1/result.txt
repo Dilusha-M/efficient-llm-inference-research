@@ -1,0 +1,254 @@
+Input prompt
+
+You are simulating a senior coding-agent design review without external tools, internet access, shell commands, package installation, or file-system inspection. Work only from the specification and artifacts below. Be concrete enough that another engineer could implement and test the design.
+
+Project:
+A research project needs a command-line llama.cpp benchmark runner supporting CPU, CUDA, and Vulkan; model aliases from a configuration file; fixed workload prompts; performance output; hardware metadata; resource monitoring; and one metadata file per run. Raw output must remain available for manual audit. The runner must distinguish a failed model run from missing optional monitoring data.
+
+Existing constraints:
+* Each condition is repeated three times and compared manually using each run's `response.txt`/raw response plus metrics.
+* The default context is 4096, generation limit 256, temperature 0.7, and CPU thread count 1; a workload may override context explicitly.
+* Workloads are `chat`, `batch`, `coding`, `summarization`, `agentic`, and `world_knowledge`.
+* The runner must not mix results if model file, backend, hardware label, context, generation limit, prompt, temperature, GPU layers, build, or driver environment changes.
+* Monitors may be unavailable or sampled sparsely. A model process may fail after creating partial output.
+
+Required deliverables:
+1. Requirements and invariants: list inputs, artifacts, success/failure states, and the experimental identity tuple. Identify at least one ambiguity that must be resolved before implementation.
+2. State-machine workflow: describe the lifecycle from validation through launch, monitoring, process exit, and finalization, including what happens on timeout, OOM, malformed performance output, and monitor failure.
+3. Auditable design: propose shell/Python component boundaries, a metadata schema, atomic-write or partial-file conventions, and how to preserve stdout/stderr and the exact prompt used.
+4. Analysis integrity: explain how to prevent a failed run or variable generated-token count from producing a misleading throughput comparison, and how a parser should treat unknown llama.cpp output formats.
+5. Test plan: provide at least six tests, including one simulated backend failure, one missing monitor, one prompt containing spaces/newlines, one partial output, and one changed prompt hash.
+6. Pre-merge review: name the three highest-risk design flaws in your proposal and the concrete changes that would fix them.
+
+Use these exact headings: Requirements and Invariants; State Machine; Auditable Design; Analysis Integrity; Test Plan; Pre-merge Review. Keep the design implementation-oriented and avoid claiming that a metric is available if the specification does not guarantee it.
+
+Final model response
+
+warning: no usable GPU found, --gpu-layers option will be ignored
+warning: one possible reason is that llama.cpp was compiled without GPU support
+warning: consult docs/build.md for compilation instructions
+
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b10110-8f5ab832c
+model      : /home/dilusha/llm-research/models/Qwen/Qwen3.5-0.8B-GGUF/Qwen3.5-0.8B-Q8_0.gguf
+ftype      : Q8_0
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> You are simulating a senior coding-agent design review without external tools, internet access, shell commands, package installation, or file-system inspection. Work only from the specification and artifacts below. Be concrete enough that another engineer could implement and test the design.
+
+Project:
+A research project needs a command-line llama.cpp benchmark runner supporting CPU, CUDA, and Vulkan; model aliases from a configuration file; fixed workload prompts; performance output; hardware me ... (truncated)
+# Requirements and Invariants
+
+## Inputs
+- **Configuration File**: `config.yaml` (default context=4096, gen_limit=256, temp=0.7, threads=1).
+- **Workload Prompt**: `prompt.txt` (fixed for each workload type: `chat`, `batch`, `coding`, `summarization`, `agentic`, `world_knowledge`).
+- **Model File**: `model.bin` (must match architecture, backend, and hardware label for cross-reference).
+- **Hardware Metadata**: `hardware.json` (must match model's `cuda_layers` and `build`).
+- **Environment Flags**: `CUDA_VERSION`, `GEMM_VERSION`, `Vulkan_VERSION`, `LLAMA_CPP_VERSION`.
+
+## Artifacts
+- **Run Log**: `run.txt` (stdout/stderr combined, preserving exact prompt).
+- **Metadata File**: `meta.json` (identical to `run.txt` but structured for reporting).
+- **Raw Output**: `raw.txt` (unencrypted, for manual audit).
+- **Performance Metrics**: `metrics.json` (if monitor active and data is present).
+
+## Success States
+1. **Validation**: If `config.yaml` is missing or invalid, `run.txt` contains errors, `run.txt` is not processed further, and `meta.json` is empty.
+2. **Successful Run**: `run.txt` contains valid llama.cpp output, `metrics.json` contains populated values if monitoring is active, and `meta.json` matches `run.txt`.
+3. **Failure State**: If the model process crashes, or if monitoring data is lost/partial, `run.txt` contains `error: ...` or `monitor unavailable`. `metrics.json` remains empty or contains `null` values. `meta.json` remains empty.
+
+## Failure States
+- **Missing Hardware**: `hardware.json` does not exist, or `cuda_layers`/`build` mismatch. `run.txt` contains hardware mismatch warnings.
+- **Missing Monitor**: `monitors.json` is missing, or monitor events are not sampled. `run.txt` contains `monitor unavailable`.
+- **Malformed Output**: `run.txt` contains invalid llama.cpp syntax (e.g., missing `.` in `model.bin` path). `run.txt` is not processed. `metrics.json` contains invalid entries.
+- **Missing Optional Data**: If a workload requires `world_knowledge` data that was not sent to the monitor, `run.txt` contains `world_knowledge data not received`.
+
+## Experimental Identity Tuple
+- **Run ID**: `run_2023_10_27_14_32`
+- **Context**: 4096
+- **Generation Limit**: 256
+- **Temperature**: 0.7
+- **CPU Threads**: 1
+- **Workload**: `chat`
+- **Backend**: `llama.cpp`
+- **Hardware Label**: `gpu`
+- **Build**: `stable`
+- **Driver Environment**: `cuda12`
+
+---
+
+# State Machine
+
+## Lifecycle Phases
+
+1. **Startup Phase**:
+   - Read `config.yaml` for `context`, `gen_limit`, `temperature`, `threads`.
+   - Read `model.bin` for `backend`, `cuda_layers`, `build`.
+   - Read `hardware.json` for `cuda_layers`, `build`, `driver_env`.
+   - Read `prompt.txt` for workloads.
+   - Construct the `ExperimentalIdentityTuple`.
+   - Validate `config.yaml` structure (required fields: context, gen_limit, temperature, threads).
+   - If validation fails, terminate immediately with `error: config.yaml is invalid`.
+   - If validation succeeds, set `context`, `gen_limit`, `temperature`, `threads`.
+
+2. **Validation Phase**:
+   - Verify `model.bin` matches `backend` (must be `llama.cpp`).
+   - Verify `cuda_layers` matches `model`'s `cuda_layers`.
+   - Verify `build` matches `model`'s `build`.
+   - Verify `driver_env` matches `cuda_layers`.
+   - Read `prompt.txt` to determine workload type.
+
+3. **Launch Phase**:
+   - Initialize a llama.cpp process with the specified configuration.
+   - Execute the workloads.
+   - Capture stdout and stderr.
+   - Wait for process completion (timeout check, OOM check).
+   - Log process exit status to `run.txt`.
+
+4. **Monitoring Phase**:
+   - If `monitors.json` exists and `cuda_layers` matches, start the specified monitor.
+   - Sample monitor events (e.g., `cuda_moomonitor:device_0:128bit`).
+   - If monitor fails to start or events are missing, log failure.
+   - Log any partial output received (e.g., `model.bin: read partial`).
+
+5. **Process Exit Phase**:
+   - If process exits with code `0` (success) or `1` (failure), log to `run.txt`.
+   - Check for `error: ...` in `run.txt`.
+
+6. **Finalization Phase**:
+   - Write `run.txt` to disk.
+   - Write `metrics.json` if monitoring data is present.
+   - Write `meta.json` if `run.txt` is valid.
+   - Close process.
+
+---
+
+# Auditable Design
+
+## Component Boundaries
+- **Shell Script**: Handles file I/O, validation logic, and process lifecycle management. Does not parse llama.cpp output; relies on `run.txt` for human review.
+- **Python Component**: Parses `run.txt`, validates metadata, and logs errors. Does not generate llama.cpp output; `run.txt` is the source of truth.
+- **Meta Schema**: JSON schema defining structure for `run.txt` and `metrics.json`.
+- **Atomic Writes**: Use file locking (`fcntl`) to ensure `run.txt` and `metrics.json` are written atomically on success, or mark the file as `unread` for partial writes.
+
+## Metadata Schema
+```json
+{
+  "run_id": "string",
+  "context": 4096,
+  "gen_limit": 256,
+  "temperature": 0.7,
+  "threads": 1,
+  "workload": "chat",
+  "backend": "llama.cpp",
+  "cuda_layers": 12,
+  "build": "stable",
+  "driver_env": "cuda12",
+  "hardware_id": "gpu",
+  "model_id": "model.bin",
+  "prompt": "chat",
+  "monitors": ["cuda_moomonitor:device_0:128bit"],
+  "raw_output": "...",
+  "monitor_errors": [],
+  "partial_outputs": [],
+  "validation_errors": [],
+  "environment_flags": {
+    "CUDA_VERSION": "...",
+    "GEMM_VERSION": "...",
+    "Vulkan_VERSION": "...",
+    "LLAMA_CPP_VERSION": "..."
+  }
+}
+```
+
+## Atomic Write Conventions
+- **Success**: Write `run.txt` first, then `metrics.json`. Use `fcntl` to lock file and write both in one atomic operation.
+- **Partial Write**: Write `run.txt` with `read_only` flag, then `metrics.json`. Do not write `meta.json` if `run.txt` is not processed.
+- **Failure**: Do not write `run.txt` or `metrics.json`. Mark `validation_errors` list.
+
+## Preservation of stdout/stderr
+- `run.txt` must include the exact prompt string provided in the config file.
+- `run.txt` must preserve the `stderr` output separately from `stdout` for human audit purposes.
+- `run.txt` must end with a newline character after the last log entry.
+
+---
+
+# Analysis Integrity
+
+## Preventing Misleading Throughput Comparisons
+- **Variable Generation-Token Count**: Do not use `len()` on the generated llama.cpp output to calculate throughput. Instead, use the `response.txt` file or the raw `stdout` pipe.
+- **Failure Handling**: If the model process fails (e.g., `error: ...`), the throughput metric should be treated as `0` or `NaN`.
+- **Unknown Format Handling**: If the parser encounters `model.bin` that does not conform to the expected llama.cpp syntax (e.g., missing path separator), treat it as a fatal parsing error. Do not attempt to extract metrics from such output.
+
+## Parser Treatment for Unknown Formats
+- **Rule**: If `run.txt` contains `error: ...` or `monitor unavailable`, do not parse the remaining content.
+- **Rule**: If `run.txt` contains valid llama.cpp output but the model failed, the throughput calculation should use the `response.txt` or raw pipe.
+- **Rule**: If the parser encounters a file path that is not a directory (e.g., `model.bin`), raise an exception and do not proceed.
+- **Rule**: If a workload requires `world_knowledge` data but the monitor is missing, log `world_knowledge data not received`, but do not generate this metric in `metrics.json`.
+
+---
+
+# Test Plan
+
+## Test Cases
+1. **Valid Baseline Run**:
+   - Input: `config.yaml` exists with valid defaults.
+   - Output: `run.txt` contains valid llama.cpp output, `metrics.json` is populated.
+   - Expected: High throughput metrics, no errors in `run.txt`.
+2. **Missing Hardware**:
+   - Input: `hardware.json` missing or mismatched `build`/`cuda_layers`.
+   - Output: `run.txt` contains hardware mismatch warnings, `metrics.json` empty.
+   - Expected: Validation fails, `run.txt` not processed, no metrics generated.
+3. **Missing Monitor**:
+   - Input: `monitors.json` missing.
+   - Output: `run.txt` contains `monitor unavailable`.
+   - Expected: Monitor event not sampled, `run.txt` contains `monitor unavailable`, `metrics.json` empty.
+4. **Malformed Output**:
+   - Input: `run.txt` contains invalid llama.cpp syntax (e.g., `model.bin` path error).
+   - Output: `run.txt` not processed, `metrics.json` invalid entries.
+   - Expected: Parsing fails, `run.txt` remains unprocessed, no metrics generated.
+5. **Partial Output**:
+   - Input: `run.txt` contains partial output before model failure.
+   - Output: `run.txt` contains `model.bin: read partial`, `metrics.json` empty.
+   - Expected: Partial data logged, no final metrics written.
+6. **Changed Prompt Hash**:
+   - Input: `config.yaml` updated with a different prompt (e.g., `chat -> coding`).
+   - Output: `run.txt` updated with the new prompt.
+   - Expected: Metrics reflect the new workload parameters.
+
+---
+
+# Pre-merge Review
+
+## Highest-Risk Design Flaws
+1. **Ambiguity in Raw Output Availability**:
+   - **Issue**: The specification guarantees "Raw output must remain available for manual audit" but does not explicitly define what constitutes "available" or how to handle cases where the raw pipe might be closed, truncated, or redirected.
+   - **Fix**: Explicitly define the protocol for raw output: "The `run.txt` file must be read-only, and any subsequent modification to `run.txt` should not be allowed. The raw output stream must be explicitly preserved and sent to the user via the pipe, not captured by any external tool."
+
+2. **Ambiguity in Monitor Sampling**:
+   - **Issue**: The specification states "Monitors may be unavailable or sampled sparsely." It does not specify a guaranteed rate or a method for handling monitor failures (e.g., immediate stop vs. graceful shutdown). Furthermore, it does not define what happens to the `metrics.json` file if a monitor fails to produce data.
+   - **Fix**: Define a monitoring event schema with a `status` field. If `status` is `failed`, the corresponding metric in `metrics.json` should be marked as `null` or `0`, and the file should be left unread or written with a specific marker indicating unavailability. Ensure the process immediately stops if a monitor fails to start.
+
+3. **Ambiguity in Metric Generation for Failed Runs**:
+   - **Issue**: There is no defined behavior when the model process fails (exit code 1) or when monitoring data is lost/partial. Does the system report `0` throughput for a failed run? Does the `raw.txt` contain the error message? Does the `run.txt` include a `status` field?
+   - **Fix**: Introduce a `status` field in `run.txt` indicating `success`, `failure`, or `monitor_unavailable`. For failed runs, the `metrics.json` must contain `0` for all metrics. The `raw.txt` must include the exit code and any error message.

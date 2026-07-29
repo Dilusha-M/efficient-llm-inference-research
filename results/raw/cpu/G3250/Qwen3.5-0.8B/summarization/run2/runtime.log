@@ -1,0 +1,85 @@
+warning: no usable GPU found, --gpu-layers option will be ignored
+warning: one possible reason is that llama.cpp was compiled without GPU support
+warning: consult docs/build.md for compilation instructions
+
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b10110-8f5ab832c
+model      : /home/dilusha/llm-research/models/Qwen/Qwen3.5-0.8B-GGUF/Qwen3.5-0.8B-Q8_0.gguf
+ftype      : Q8_0
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> Summarize the following technical document. Focus on the experimental design, measurement methodology, limitations, and reproducibility implications.
+
+Technical document:
+
+Large language model inference on consumer hardware is constrained by a combination of memory capacity, memory bandwidth, compute throughput, software backend maturity, and workload shape. Unlike training, inference is often dominated by repeated matrix-vector operations during autoregressive decoding. During prompt processing ... (truncated)
+Based on the provided technical document, here is a structured summary of experimental design, methodology, and reproducibility implications for consumer hardware Large Language Model inference benchmarks.
+
+### 1. Experimental Design & Workload Types
+*   **Separation of Operations:** Inference must be measured separately from training due to the heavy matrix-vector operations during decoding.
+*   **Primary Workloads:** The design accommodates five distinct patterns:
+    *   **Chat/Explanatory:** Evaluating general response generation.
+    *   **Coding:** Testing structured reasoning and code production.
+    *   **Summarization:** Including long prompts to stress context handling.
+    *   **Batching:** Testing unrelated tasks in a single prompt.
+    *   **Agentic:** Simulating agents planning and reviewing solutions (without tools).
+*   **Fixed Prompts:** Fixed content is critical; small changes in prompt length or content drastically affect tokenization, processing time, and generation behavior.
+
+### 2. Measurement Methodology
+*   **Hardware Labels:** Must be stable and human-readable (e.g., `cpu/ryzen5600`, `gpu/rtx2060-12gb`). Labels are metadata; system hardware metadata is the evidence needed for reproducibility.
+*   **Metric Extraction:**
+    *   **Prompt Evaluation:** Time, tokens, and throughput per second.
+    *   **Decoding:** Time, tokens, and throughput per second.
+    *   **Raw Output:** Preserve stdout/stderr streams in result files; use parsers to extract metrics (avoiding manual inspection).
+    *   **Time-to-First-Token:** Record if possible (via `llama.cpp` output), otherwise use external measurement.
+*   **Resource Monitoring:** Use standard tools (`nvidia-smi`, `/proc/stat`/`/proc/meminfo`) to capture power draw, temperature, and usage. Record all missing metrics as `null`.
+*   **Run Statistics:** Record **all** runs, not just successful ones, to avoid survivorship bias. Use repetition counts to estimate stability (e.g., 3 runs $\rightarrow$ median).
+
+### 3. Reproducibility & Configuration Control
+*   **Tuple-Based Design:** Every condition must be a tuple containing: model file, backend, hardware label, context length, generation limit, prompt file, temperature, GPU layer count, build version, and driver environment.
+*   **Data Integrity:** If any tuple element changes, the result must not be mixed with earlier results. Failure handling must include metadata indicating the specific error or final state, not skipping the condition.
+*   **Metadata Storage:** Store model aliases, paths, build hashes, and timestamps. Prompt files and model files should be versioned or hashed to detect accidental edits.
+*   **Determinism:** Prompts and models must be fixed or versioned. Sampled decoding policies must be consistent across conditions unless explicitly testing for variability.
+
+### 4. Limitations & Validity Considerations
+*   **Thermal & Power Behavior:** Consumer hardware is subject to throttling, power management, and boost behavior. These can alter throughput even under controlled settings.
+*   **Model Quality vs. Throughput:** Throughput does not always correlate with quality. Lower precision formats ($Q4$) reduce memory but may alter kernel behavior; quantization must be recorded alongside the model version.
+*   **Hardware Constraints:** Benchmarks must account for VRAM limits, GPU driver versioning, and the specific architecture (CUDA vs. Vulkan). Multi-GPU setups require explicit layer placement and memory isolation metadata.
+*   **Sampling Variability:** Generated token counts can vary with sampling settings. Benchmarks should prefer deterministic settings or fixed generation limits.
+
+### 5. Output & Analysis
+*   **CSV vs. Raw:** Processed CSVs are useful for analysis, but raw artifacts (result files) are the primary source. Metadata files support analysis; CSVs are derived.
+*   **Schema:** A stable schema is required (identifying the experiment identifier, hardware metadata, etc.) to allow notebooks, plots, and statistical summaries.
+*   **Reporting:** Avoid overclaiming. Use repetition counts to establish statistical confidence, acknowledging that 3 runs may only reveal instability rather than the full variance.
+
+### 6. Proposed Framework Structure
+The recommended framework should be simple, robust, and auditable:
+1.  **Run Execution:** Simple scripts to invoke binaries and start monitors.
+2.  **Metadata Collection:** Capture hardware state, binary versions, and environment variables.
+3.  **Processing:** Parse raw output to extract metrics.
+4.  **Analysis:** Generate CSVs with metadata and report statistics (including failure counts).
+5.  **Verification:** Ensure every result is traceable back to a model, prompt, command, hardware snapshot, and parser rule.
+
+[ Prompt: 6.7 t/s | Generation: 2.2 t/s ]
+
+
+Exiting...

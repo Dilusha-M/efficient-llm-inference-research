@@ -1,0 +1,115 @@
+warning: no usable GPU found, --gpu-layers option will be ignored
+warning: one possible reason is that llama.cpp was compiled without GPU support
+warning: consult docs/build.md for compilation instructions
+
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b10110-8f5ab832c
+model      : /home/dilusha/llm-research/models/Qwen/Qwen3.5-0.8B-GGUF/Qwen3.5-0.8B-Q8_0.gguf
+ftype      : Q8_0
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> You are reviewing production-quality Python for an inference benchmark. Implement the function below in Python using only the standard library.
+
+Task:
+Implement `summarize_decode_speeds(lines)` where `lines` is an iterable of strings. Return a dictionary with exactly these keys:
+
+* `count`: number of valid decode records
+* `min_tps`: minimum valid tps, or `None` when there are no valid records
+* `max_tps`: maximum valid tps, or `None` when there are no valid records
+* `avg_tps`: arithmetic mean  ... (truncated)
+```python
+import math
+from typing import Iterable, Dict, Any, Optional, Union
+
+def summarize_decode_speeds(lines: Iterable[str]) -> Dict[str, Any]:
+    """
+    Summarize decode speeds for lines containing event=decode with tps=<value>.
+
+    Returns a dictionary with keys:
+    - count: number of valid decode records
+    - min_tps: minimum valid tps (None if no valid records)
+    - max_tps: maximum valid tps (None if no valid records)
+    - avg_tps: average rounded to 3 decimals (None if no valid records)
+    
+    A record is valid only when:
+    1. It contains the exact key `event=decode`.
+    2. It contains a key `tps=<value>` where:
+       - `<value>` is a finite, strictly positive decimal.
+       - The value is accepted by Python's `float`.
+       - Duplicates of the same tps key are treated as malformed.
+    
+    Edge cases handled:
+    - Non-string items: ignored.
+    - Malformed lines: ignored.
+    - Non-decode events: ignored.
+    - Duplicate tps keys with equal values: malformed.
+    - Non-finite values (nan, inf, -inf): rejected.
+    - Zero and negative values: rejected.
+    - Empty string: treated as a valid single-tps value (0).
+    - Non-string lines: treated as a valid string with no tps.
+    
+    Algorithm (one-pass, O(1) extra space):
+    1. Iterate through `lines`.
+    2. For each line:
+       a. If it's not a string, skip it.
+       b. Split the line on whitespace.
+       c. Extract `event` and `tps`.
+       d. Check for `event=decode`.
+       e. Extract `tps`.
+       f. Validate `tps`:
+          - Must be a finite, strictly positive float.
+          - Duplicates of same tps are malformed.
+          - NaN, inf, -inf, zero, negative are rejected.
+          - Empty string is accepted (value=0).
+       g. If all checks pass, increment `count`, update `min/max/avg`.
+    3. Return the summary.
+    
+    Why naive substring matching can be wrong:
+    - It checks the entire line for `event=decode`. A line like `"event=decode: 10.5"` matches.
+    - If the parser splits on whitespace, it might also match `event=decode` within the `tps` string if `tps` happens to contain `decode` as part of the number (e.g., `tps=10.5decode` -> `event=decode` matches).
+    - The tokenizer removes surrounding whitespace, so a line like `"event=decode 10.5"` would match `event=decode` and `tps=10.5` regardless of the delimiter used for `tps` (space or comma).
+    - Similarly, a malformed line like `"event=decode 10.5"` could be split into `event=decode` and `10.5`, or it could be split into `event` and `decode 10.5` depending on the split logic.
+
+    Empty-result policy:
+    - If after processing all lines, `count == 0`, then `min_tps`, `max_tps`, and `avg_tps` are set to `None`.
+    - This avoids returning an empty dictionary when the input stream is malformed or empty.
+    
+    Demonstration lines:
+    - Valid record with tps=10.5.
+    - Key=value field (no event).
+    - Non-decode event.
+    - Malformed float (nan).
+    - Duplicate key with conflicting value (malformed).
+    - Non-string item (ignored).
+    - Valid record with tps requiring rounding (10.5).
+    
+    Expected summary for demonstration:
+    count = 1
+    min_tps = 10.5
+    max_tps = 10.5
+    avg_tps = 10.5
+```
+
+[ Prompt: 6.9 t/s | Generation: 3.4 t/s ]
+
+
+Exiting...
