@@ -8,9 +8,9 @@ BASE="$HOME/llm-research"
 # Experiment configuration
 # ==========================
 
-BACKEND="cuda"
-HARDWARE="gtx1650-4gb"
-MODEL="GEMMA4_E2B"
+BACKEND="cpu"
+HARDWARE="i7-4790k"
+MODEL="QWEN35_0_8B"
 RUNS=3
 GPU_LAYERS=999
 # CUDA-only MoE CPU offload. Leave empty for ordinary layer offloading.

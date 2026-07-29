@@ -1,0 +1,231 @@
+Input prompt
+
+You are simulating a senior coding-agent design review without external tools, internet access, shell commands, package installation, or file-system inspection. Work only from the specification and artifacts below. Be concrete enough that another engineer could implement and test the design.
+
+Project:
+A research project needs a command-line llama.cpp benchmark runner supporting CPU, CUDA, and Vulkan; model aliases from a configuration file; fixed workload prompts; performance output; hardware metadata; resource monitoring; and one metadata file per run. Raw output must remain available for manual audit. The runner must distinguish a failed model run from missing optional monitoring data.
+
+Existing constraints:
+* Each condition is repeated three times and compared manually using each run's `response.txt`/raw response plus metrics.
+* The default context is 4096, generation limit 256, temperature 0.7, and CPU thread count 1; a workload may override context explicitly.
+* Workloads are `chat`, `batch`, `coding`, `summarization`, `agentic`, and `world_knowledge`.
+* The runner must not mix results if model file, backend, hardware label, context, generation limit, prompt, temperature, GPU layers, build, or driver environment changes.
+* Monitors may be unavailable or sampled sparsely. A model process may fail after creating partial output.
+
+Required deliverables:
+1. Requirements and invariants: list inputs, artifacts, success/failure states, and the experimental identity tuple. Identify at least one ambiguity that must be resolved before implementation.
+2. State-machine workflow: describe the lifecycle from validation through launch, monitoring, process exit, and finalization, including what happens on timeout, OOM, malformed performance output, and monitor failure.
+3. Auditable design: propose shell/Python component boundaries, a metadata schema, atomic-write or partial-file conventions, and how to preserve stdout/stderr and the exact prompt used.
+4. Analysis integrity: explain how to prevent a failed run or variable generated-token count from producing a misleading throughput comparison, and how a parser should treat unknown llama.cpp output formats.
+5. Test plan: provide at least six tests, including one simulated backend failure, one missing monitor, one prompt containing spaces/newlines, one partial output, and one changed prompt hash.
+6. Pre-merge review: name the three highest-risk design flaws in your proposal and the concrete changes that would fix them.
+
+Use these exact headings: Requirements and Invariants; State Machine; Auditable Design; Analysis Integrity; Test Plan; Pre-merge Review. Keep the design implementation-oriented and avoid claiming that a metric is available if the specification does not guarantee it.
+
+Final model response
+
+warning: no usable GPU found, --gpu-layers option will be ignored
+warning: one possible reason is that llama.cpp was compiled without GPU support
+warning: consult docs/build.md for compilation instructions
+
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b10110-8f5ab832c
+model      : /home/dilusha/llm-research/models/Qwen/Qwen3.5-0.8B-GGUF/Qwen3.5-0.8B-Q8_0.gguf
+ftype      : Q8_0
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> You are simulating a senior coding-agent design review without external tools, internet access, shell commands, package installation, or file-system inspection. Work only from the specification and artifacts below. Be concrete enough that another engineer could implement and test the design.
+
+Project:
+A research project needs a command-line llama.cpp benchmark runner supporting CPU, CUDA, and Vulkan; model aliases from a configuration file; fixed workload prompts; performance output; hardware me ... (truncated)
+# Requirements and Invariants
+
+## Inputs
+- **Model Configuration**: Path to a `model` file containing model name, version, and backend (cuda/cu123/cu124).
+- **Hardware Metadata**: File `hardware.txt` containing `device_type` (cpu/cuda/vulkan), `context_size`, `generation_limit` (default 256), `threads` (default 1), `layer_count`, `build`, `driver` version.
+- **Workload Prompt**: Text string defining the task (e.g., `chat`, `batch`, `coding`, `summarization`, `agentic`, `world_knowledge`), `prompt` (the actual prompt string to inject), and `timeout` (optional, default 300).
+- **Output File**: `response.txt` (or raw output stream) containing the model's generation.
+- **Environment Flags**: Environment variables (e.g., `LLAMA_CPP_CUDA`, `LLAMA_CPP_CU123`, `LLAMA_CPP_VULKAN`) or flags passed to the process.
+- **Monitor Availability**: Boolean flag `MONITOR_AVAILABLE` (default `false`) and optionally a path to a monitor file or script.
+
+## Artifacts
+- **`run_log.txt`**: A structured log file containing:
+  - `RUN_ID`: Unique identifier (e.g., `run_123`).
+  - `DEVICE`: `cpu` or `cuda` (or `vulkan`).
+  - `CONTEXT`: Number of context tokens.
+  - `GENERATION_LIMIT`: Number of generated tokens.
+  - `TIMESTAMP`: ISO 8601 timestamp.
+  - `PROCESS_STATE`: `FAILED`, `SUCCESS`, or `WARN` (for partial outputs).
+  - `MONITOR_AVAILABLE`: `true` or `false`.
+  - `MONITOR_STATUS`: `READY`, `RUNNING`, or `FAILED`.
+  - `OUTPUT_RAW`: The raw model response text.
+- **`config.txt`**: A configuration file for the run containing the model path, device type, context size, generation limit, prompt string, and temperature.
+- **`metadata.txt`**: A single text file containing the model name, version, backend, device type, context size, generation limit, prompt, temperature, GPU layers count, build version, and driver version.
+- **`benchmark_results.csv`**: A CSV file containing a list of benchmark results, with columns: `id`, `status`, `response_text`, `latency`, `tokens_per_second`, `error_code`.
+
+## Success/Failure States
+- **SUCCESS**: Model completed successfully, output is valid text, and the process exits cleanly with a status code (e.g., 0).
+- **FAILED**: Model exits with a non-zero status code, or the process is terminated abruptly (e.g., OOM, signal, timeout).
+- **WARN**: The process completes successfully but fails to produce valid output (e.g., OOM, timeout, monitor failure).
+
+## Experimental Identity Tuple
+- `run_id`: `12345678`
+- `device_type`: `cuda`
+- `context_size`: `8192`
+- `generation_limit`: `256`
+- `prompt`: `summarization`
+- `temperature`: `0.7`
+- `backend`: `cuda`
+- `build`: `stable`
+- `driver`: `123`
+
+## Ambiguity to Resolve
+**Ambiguity**: The specification states that "Raw output must remain available for manual audit." However, it does not explicitly specify **what** constitutes "valid" or "complete" raw output in terms of formatting (e.g., is it required to be a specific JSON structure, or is it just any string ending with `\n` or `\r\n`? Is the output truncated at a specific token count, or is it unlimited?).
+*Resolution*: The implementation must enforce a **strict text-only** constraint on `response.txt` and `raw output`. It must parse the response exactly as received, stripping any non-text characters (like JSON keys, markdown code blocks, or newlines), but it must not truncate the output prematurely based on a dynamic token limit unless explicitly defined in the environment or config.
+
+---
+
+# State Machine Workflow
+
+The lifecycle of a benchmark run is defined as follows:
+
+### 1. Initialization
+- The runner reads `config.txt` to set default values (`context=4096`, `limit=256`, `temp=0.7`, `threads=1`).
+- It verifies `MONITOR_AVAILABLE`. If false, it logs a warning and proceeds without starting monitors.
+- It checks for any environment variables indicating CUDA/Cu123/Vulkan usage.
+- It creates a temporary directory for running the model process.
+- It writes the model configuration to `config.txt`.
+
+### 2. Validation
+- The runner parses `model.txt` to extract the model name and backend.
+- It checks the `device_type` against the expected backend (e.g., `cuda` vs `cu123`). If mismatch, it fails with an error.
+- It checks if the process has already started. If so, it logs the previous run ID and skips execution.
+- It verifies the prompt string matches the expected workload type (e.g., `chat` != `batch`).
+
+### 3. Launch
+- The runner spawns a new subprocess (or uses an existing one) to run the llama.cpp model.
+- It passes the `prompt` string and `timeout` to the llama.cpp process.
+- It sets the `device` environment variable based on hardware metadata.
+- It waits for the process to fully initialize.
+
+### 4. Execution
+- The llama.cpp process executes the inference.
+- If the process exits with code $\ge$ 1 (OOM, signal, timeout), the runner transitions to state `FAILED`.
+- If the process completes successfully with valid output, the runner proceeds to state `SUCCESS`.
+
+### 5. Monitoring
+- If `MONITOR_AVAILABLE` is true and the process is running:
+  - The runner checks if the monitor file exists.
+  - If the monitor file is empty, the process is considered "ready" to generate data.
+  - If the process fails to generate data within the timeout, the monitor status becomes `FAILED`.
+- If the monitor file exists but is empty, the process is considered "running".
+
+### 6. Process Exit and Finalization
+- **OOM**: The process terminates. `PROCESS_STATE` becomes `WARN`.
+- **Timeout**: The process terminates. `PROCESS_STATE` becomes `WARN`.
+- **Monitor Failure**: If the monitor status is `FAILED`, the `response.txt` is discarded and the process is marked as `FAILED` (with `MONITOR_STATUS` set to `FAILED`).
+- **Validation**: The runner checks if `response.txt` is present and non-empty. If not, the process is marked as `FAILED`.
+- **Finalization**: The runner writes the `run_log.txt` and `benchmark_results.csv`. It cleans up the temporary directory.
+
+---
+
+# Auditable Design
+
+## Shell/Python Component Boundaries
+- **`run_runner.py`**: The core engine. Handles parsing, state management, subprocess creation, and orchestration. It does not accept external prompts or data; it reads from `config.txt`, `model.txt`, and `hardware.txt`.
+- **`generate_response.py`**: A Python script that receives a prompt, context size, and generation limit. It calls `llama.cpp` with these arguments and captures the output. It does not read `response.txt`; it writes it directly.
+- **`processes.py`**: Manages the subprocess lifecycle. Handles `SIGINT`, `SIGTERM`, and `KILL` signals. It tracks the exit code and the final state.
+- **`loggers.py`**: Handles file I/O for `run_log.txt` and `benchmark_results.csv`.
+
+## Metadata Schema
+The schema is defined as a single text file (`metadata.txt`) containing:
+```text
+model_name=quantized_llama_7b
+version=2.0.0
+backend=cuda
+device_type=cpu
+context_size=8192
+generation_limit=256
+prompt=summarization
+temperature=0.7
+gpu_layers=4
+build=stable
+driver=123
+```
+This metadata is immutable and used solely for cross-referencing hardware metadata.
+
+## Atomic-Write or Partial-File Conventions
+- **`response.txt`**: This is the primary audit artifact. It is **always** written atomically using `execa` with the `atomic=True` flag.
+  - If the process fails (OOM, timeout), the file is truncated to the last non-empty line.
+  - If the process succeeds, the file is written as-is.
+- **`benchmark_results.csv`**: This file is also written atomically. It only exists if there is valid data in `response.txt`.
+- **`config.txt`**: This is a simple text file; no atomic write is required, but its content is immutable per run.
+
+## Preservation of stdout/stderr
+- The `generate_response.py` script does not read `response.txt`. It writes the raw output to `response.txt` immediately after the inference completes.
+- The `run_runner.py` script reads `response.txt` from the current directory.
+- **Exception**: If `response.txt` is missing or empty, the script logs "No output available" and exits with code 2, triggering a `FAILED` state. The script does not redirect `stdout` or `stderr` unless explicitly requested in `llama.cpp` arguments (which is not the default here).
+
+---
+
+# Analysis Integrity
+
+## Preventing a Failed Run or Variable Generated-Token Count
+To prevent a failed run or misleading throughput metrics:
+1.  **Token Count Verification**: The `generate_response.py` script must strictly limit the number of tokens generated. It cannot use the `llama.cpp` default behavior. It must manually enforce a token count (e.g., 256) or a fixed block size (e.g., 1000 tokens). If it generates more than the limit, it must truncate the output or fail the process.
+2.  **Output Format Validation**: The parser for `response.txt` must be strict. It must strip all non-text characters (including newlines) and ignore any formatting that looks like JSON or markdown.
+3.  **Hardware Label Consistency**: The `device_type` in `run_log.txt` must match the backend in `metadata.txt`. If a device type is specified in `hardware.txt` but ignored in the config, the log must reflect the correct one.
+
+## Handling Unknown llama.cpp Output Formats
+The parser must treat any response text as raw text.
+- It does not expect specific schema structures.
+- It treats whitespace as significant for parsing but does not require newlines at the end.
+- It does not attempt to parse JSON or Markdown.
+- If the response contains a non-text character (e.g., `json: {...}`), the script should treat the entire string as "raw" and fail to match against a fixed-text pattern, logging a warning or marking the run as failed.
+
+---
+
+# Test Plan
+
+1.  **Simulated Backend Failure**:
+    - *Scenario*: Model fails OOM immediately.
+    - *Action*: Run with `context_size=1024` and `generation_limit=100` to trigger OOM. Check `run_log.txt` shows `PROCESS_STATE=WARN` and `response.txt` is truncated. Verify `benchmark_results.csv` is missing.
+
+2.  **Missing Monitor**:
+    - *Scenario*: `MONITOR_AVAILABLE` is set to `false`.
+    - *Action*: Run the benchmark. Check `run_log.txt`. Verify `MONITOR_AVAILABLE` is `false` but `MONITOR_STATUS` is `READY`. Ensure `response.txt` is present.
+
+3.  **Prompt Containing Spaces/Newlines**:
+    - *Scenario*: Prompt includes spaces or newlines.
+    - *Action*: Run the benchmark. Check that the parser correctly handles the prompt string. Verify `response.txt` is valid text without newlines. Verify the `generation_limit` is enforced correctly.
+
+4.  **Partial Output**:
+    - *Scenario*: Monitor is available but the model fails to generate data within the timeout.
+    - *Action*: Run the benchmark. Check `run_log.txt`. Verify `MONITOR_STATUS` is `RUNNING`. Check `response.txt` is present but empty (or truncated at the last line). Verify `benchmark_results.csv` is missing.
+
+5.  **Changed Prompt Hash**:
+    - *Scenario*: Prompt content changes slightly (e.g., adding a space at the end or changing casing).
+    - *Action*: Run the benchmark twice with identical `config.txt`, `hardware.txt`, and `model.txt` but with a different prompt string. Verify `response.txt` contains the exact new prompt string and `generation_limit` remains consistent with the config.
+
+6.  **Changed Prompt Hash (Variant)**:
+    - *Scenario*: A subtle variation in the prompt string (e.g., different casing or extra whitespace) that maps to a different internal prompt ID.
+    - *Action*: Run the benchmark twice with the same hardware config and same device type, but with a different prompt string. Verify that `run_log.txt` contains a new `RUN_ID` and that the metrics (generation limit, context) are correctly derived from the new prompt.

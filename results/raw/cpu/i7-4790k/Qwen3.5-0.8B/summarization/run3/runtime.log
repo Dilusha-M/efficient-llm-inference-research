@@ -1,0 +1,104 @@
+warning: no usable GPU found, --gpu-layers option will be ignored
+warning: one possible reason is that llama.cpp was compiled without GPU support
+warning: consult docs/build.md for compilation instructions
+
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b10110-8f5ab832c
+model      : /home/dilusha/llm-research/models/Qwen/Qwen3.5-0.8B-GGUF/Qwen3.5-0.8B-Q8_0.gguf
+ftype      : Q8_0
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> Summarize the following technical document. Focus on the experimental design, measurement methodology, limitations, and reproducibility implications.
+
+Technical document:
+
+Large language model inference on consumer hardware is constrained by a combination of memory capacity, memory bandwidth, compute throughput, software backend maturity, and workload shape. Unlike training, inference is often dominated by repeated matrix-vector operations during autoregressive decoding. During prompt processing ... (truncated)
+Based on the provided technical document, here is a structured summary of the experimental design, methodology, and reproducibility implications for consumer hardware Large Language Model (LLM) inference benchmarks.
+
+### 1. Experimental Design
+*   **Core Philosophy:** Unlike training, inference is dominated by matrix operations. The design mandates **separating prompt evaluation and decoding throughput** to isolate these variables.
+*   **Workload Diversity:** Tests must cover multiple patterns:
+    *   *General:* Explanatory response generation.
+    *   *Structured:* Coding reasoning.
+    *   *Summarization:* Long prompts and context handling.
+    *   *Agentic:* Planning and code review without external tools.
+    *   *Fixed Prompts:* Ensures small changes in content/prompt length affect tokenization and generation behavior.
+*   **Hardware Constraints:**
+    *   Consumer GPUs with limited VRAM are critical; performance degrades when model weights or cache do not fit comfortably.
+    *   Multi-GPU configurations introduce complex interconnect scheduling issues.
+    *   CPU performance is heavily dependent on core count, clock speed, and vector support, though thread counts also influence results.
+*   **Workload Characteristics:**
+    *   Summarization with thousands of tokens stresses key-value cache allocation.
+    *   Short chat prompts stress decoding heavily.
+    *   Batch prompts can reveal instruction separation across long inputs.
+
+### 2. Measurement Methodology
+*   **Separation of Metrics:**
+    *   **Prompt Processing Time:** Evaluated during the initial prompt evaluation phase (high parallelism).
+    *   **Decode Throughput:** Evaluated during the generation phase (token-by-token).
+    *   **Token Counts:** Required for both prompt and decode analysis.
+*   **Raw Artifact Preservation:**
+    *   The framework must preserve the **full stdout/stderr stream** in a result file to ensure the parser can extract metrics accurately.
+    *   The process should distinguish between a "failed run" (missing artifacts) and a "missing monitoring sample" (empty sensor data), as failure is an empirical observation.
+*   **Hardware Metadata:**
+    *   Labels must be **stable and human-readable** (e.g., `gpu/rtx2060-12gb`), serving as a path/grouping convention.
+    *   System metadata (CPU model, RAM capacity, GPU model, VRAM, OS, driver version) must be recorded alongside hardware labels.
+    *   **Failure Handling:** Failed attempts should be recorded with metadata and error messages to prevent survivorship bias.
+*   **Resource Monitoring:**
+    *   Tools like `nvidia-smi` are used to capture power draw, temperature, memory usage, and utilization.
+    *   Linux interfaces (`/proc/stat`, `/proc/meminfo`) are used for CPU and RAM.
+    *   **Critical:** Missing values must be recorded as `null` or blank to avoid benchmark crashes.
+
+### 3. Reproducibility and Validation
+*   **Tuple-Based Reproducibility:**
+    *   A benchmark condition is treated as a **tuple** containing: `Model File, Backend, Hardware Label, Context Length, Generation Limit, Prompt File, Temperature, GPU Layer Count, Build, Driver Environment`.
+    *   Any change to this tuple must be explained, and results should not be mixed with earlier runs unless a clear causal link is established.
+*   **Statistical Reporting:**
+    *   **Minimum Rule:** 3 runs are recommended to reveal instability, but statistical confidence requires more data.
+    *   **Aggregation:** Median throughput is more robust than mean throughput when one run is affected by background activity.
+    *   **Denominator:** Failed runs must be included in denominator counts to avoid bias toward successful runs.
+*   **Determinism vs. Sampling:**
+    *   Fixed generation limits or deterministic decoding are preferred to ensure reproducible token counts, though sampled decoding may be necessary for interactive use.
+    *   Temperature and sampling settings should be consistent across conditions unless explicitly studied for decoding variability.
+*   **Raw vs. Derived Artifacts:**
+    *   **Raw Files:** Primary source (exact model output).
+    *   **Processed CSV:** Secondary source (for analysis, plots, tables).
+    *   **Metadata:** Supporting evidence (configuration and status).
+    *   **Auditability:** A researcher can inspect a raw run, compare it with the parsed row, and verify extraction correctness.
+
+### 4. Key Limitations and Considerations
+*   **Thermal/Power Behavior:** Performance can vary significantly due to thermal throttling, background processes, and power management.
+*   **Cache Bottlenecks:** The key-value cache consumes memory and can cause paging or latency instability on consumer hardware if not sized correctly.
+*   **Model Quality vs. Throughput:** Throughput does not always equal quality; lower precision formats (e.g., Q4) may alter kernel behavior.
+*   **Hardware Heterogeneity:** Comparing backends (CPU, CUDA, Vulkan) requires documenting specific binary versions, driver versions, and runtime parameters.
+*   **Overgeneralization:** Benchmarks should not overgeneralize from a single set of devices or workloads; small changes in prompt content can drastically alter behavior.
+
+### 5. Recommendations for the Framework
+*   **Automation:** Keep automation scripts simple (Shell for binaries, Python for parsing) to ensure robustness on older hardware.
+*   **Documentation:** Clearly document whether the experiment measures "Maximum Throughput" (controlled environment) or "Realistic Consumer Performance" (ordinary settings), as both answer different questions.
+*   **Versioning:** Prompts and model files should be versioned (by filename or hash) to prevent accidental edits from skewing results.
+*   **Reporting:** Avoid overclaiming statistics; provide context (e.g., repetition count, aggregation method) to allow transparent analysis and reporting in papers or theses.
+
+[ Prompt: 44.5 t/s | Generation: 12.3 t/s ]
+
+
+Exiting...
