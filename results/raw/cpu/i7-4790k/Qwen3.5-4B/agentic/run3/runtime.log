@@ -1,0 +1,223 @@
+warning: no usable GPU found, --gpu-layers option will be ignored
+warning: one possible reason is that llama.cpp was compiled without GPU support
+warning: consult docs/build.md for compilation instructions
+
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b10110-8f5ab832c
+model      : /home/dilusha/llm-research/models/Qwen/Qwen3.5-4B-GGUF/Qwen3.5-4B-Q4_K_M.gguf
+ftype      : Q4_K - Medium
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> You are simulating a senior coding-agent design review without external tools, internet access, shell commands, package installation, or file-system inspection. Work only from the specification and artifacts below. Be concrete enough that another engineer could implement and test the design.
+
+Project:
+A research project needs a command-line llama.cpp benchmark runner supporting CPU, CUDA, and Vulkan; model aliases from a configuration file; fixed workload prompts; performance output; hardware me ... (truncated)
+# Requirements and Invariants
+
+### Inputs and Artifacts
+*   **Configuration**: A JSON/YAML file defining model aliases, workloads, and backend flags. Each entry must specify the model path, backend (`cpu`, `cuda`, `vulkan`), context size (default 4096), max tokens (default 256), temperature (default 0.7), thread count (default 1), and optional workload-specific overrides.
+*   **Prompt Data**: A dictionary of prompts keyed by workload type. Prompts must be deterministic.
+*   **Environment**: Variables for `LLAMA_CPP_PATH`, `GPU_DRIVER_PATH` (for Vulkan), and `MONITOR_CONFIG`.
+
+### Success and Failure States
+*   **Success**: The model generates the requested number of tokens without crashing, the output is written to `response.txt`, and performance metrics (tokens/sec) are successfully parsed from `benchmark.txt` (if available).
+*   **Partial Success**: The process exits with a non-zero status due to OOM or timeout, but `response.txt` contains partial generations. Metrics may be incomplete or zero.
+*   **Failure**: The process crashes immediately, returns empty stdout/stderr, or produces no `response.txt`.
+*   **Monitor Failure**: The monitoring daemon fails to connect or returns empty data. This is **not** a model execution failure. The run still counts as successful if `response.txt` exists, but the "Performance" section will be incomplete.
+
+### Experimental Identity Tuple
+Every run must generate a unique `run_id` (timestamp + random seed) and a deterministic `hash_input` derived from: `{model_path, backend, context, max_tokens, temperature, thread_count, prompt_content, build_version, driver_version}`.
+*   **Isolation Rule**: If any element of the `hash_input` changes, the previous result must be discarded, and a new run initiated. Mixing results from different builds or drivers is strictly prohibited.
+
+### Ambiguity Resolution
+*   **Ambiguity**: How to define "successful completion" when the `max_tokens` limit is not strictly enforced by `llama.cpp` (which often continues generating until killed) vs. the workload's logical end.
+*   **Resolution**: The runner must treat the run as complete only when the output file size matches the expected byte count for `max_tokens * average_token_size` (approx 3 bytes) OR the process is explicitly signaled to stop via SIGTERM after the token count threshold is hit. If the process runs longer than 60 seconds without stopping, it is considered a timeout/failure regardless of output length.
+
+---
+
+# State Machine
+
+The lifecycle consists of six discrete states. Transitions are guarded by specific conditions.
+
+1.  **`IDLE`**
+    *   **Action**: Parse config, validate inputs, generate `run_id`, load monitor agents.
+    *   **Transition to `VALIDATION`**: If config is valid and monitor agents initialized.
+    *   **Transition to `FAILURE`**: If config is missing required keys or monitor initialization fails.
+
+2.  **`VALIDATION`**
+    *   **Action**: Check file existence for model. Verify prompt hash against expected values. Check for environment variable conflicts (e.g., mixed CUDA/Vulkan flags).
+    *   **Transition to `LAUNCH`**: If all checks pass.
+    *   **Transition to `FAILURE`**: If file missing, hash mismatch, or environment conflict. Log reason to `error.log`.
+
+3.  **`LAUNCH`**
+    *   **Action**: Fork process. Pass environment variables, stdin (prompt), and stdout/stderr redirections. Start monitor agents.
+    *   **Transition to `RUNNING`**: If process fork succeeds.
+    *   **Transition to `FAILURE`**: If fork fails (e.g., permission denied, binary missing).
+
+4.  **`RUNNING`**
+    *   **Action**: Monitor process PIDs. Watch for SIGKILL/SIGSEGV. Read `benchmark.txt` for metrics periodically. Read `response.txt` for partial output.
+    *   **Transition to `COMPLETED`**: If process exits with code 0 and `response.txt` size > 0.
+    *   **Transition to `TIMEOUT`**: If process alive > 60s or tokens generated > `max_tokens` for > 5s.
+    *   **Transition to `CRASH`**: If process receives SIGSEGV or SIGKILL (non-zero exit code < 128).
+    *   **Transition to `MONITOR_FAILURE`**: If monitor agents lose connection (distinct from model crash).
+
+5.  **`COMPLETED` / `TIMEOUT` / `CRASH`**
+    *   **Action**: Terminate monitor agents. Copy stdout/stderr to `run_log.txt`. Copy `response.txt` to `response_final.txt`. Attempt to parse `benchmark.txt`.
+    *   **Transition to `FINALIZING`**: Always.
+
+6.  **`FINALIZING`**
+    *   **Action**: Write atomic metadata file (`run_metadata.json`). Move temporary files to final storage using `mv` (atomic on POSIX) or rename operation.
+    *   **Transition to `DONE`**: If write succeeds.
+
+### Handling Edge Cases
+*   **Timeout**: Send SIGTERM. Wait 5s. If still running, send SIGKILL. Record exit code as 124 (timeout).
+*   **OOM**: Process exits with code 137 or 139. Record as `CRASH`. Do not retry unless `retries` config flag is set.
+*   **Malformed Performance Output**: If `benchmark.txt` exists but cannot be parsed (e.g., corrupted by another process), assume metrics are invalid but do not mark the run as failed. Flag as `METRICS_INCOMPLETE`.
+*   **Monitor Failure**: If monitor dies after model succeeds: The run is `COMPLETED`. The metadata will have `monitor_status: "disconnected"`. This is not a failure of the model run.
+
+---
+
+# Auditable Design
+
+### Component Boundaries
+*   **Shell Wrapper (`runner.sh`)**: Orchestrates the state machine, handles process management (forking, signals), and manages file locking to prevent concurrent writes.
+*   **Python Core (`runner.py`)**: Handles complex logic, JSON parsing, metric calculation, and atomic file operations. Runs in a managed subprocess to isolate memory.
+*   **Monitor Agents**: Separate lightweight daemons (or background threads) responsible for reading `/proc` stats or specific GPU tools. They are decoupled from the model process lifecycle.
+
+### Metadata Schema (`run_metadata.json`)
+```json
+{
+  "run_id": "uuid-uuid",
+  "timestamp_iso": "2023-10-27T10:00:00Z",
+  "identity": {
+    "model": "/path/to/model.gguf",
+    "backend": "vulkan",
+    "context": 4096,
+    "max_tokens": 256,
+    "temperature": 0.7,
+    "threads": 1,
+    "prompt_hash": "sha256:...:...",
+    "build_version": "v0.1.2",
+    "driver_version": "520.91"
+  },
+  "execution": {
+    "exit_code": 0,
+    "exit_signal": "none",
+    "duration_seconds": 12.4,
+    "tokens_generated": 256,
+    "status": "success"
+  },
+  "monitoring": {
+    "available": true,
+    "data_points": 12,
+    "memory_peak_mb": 2048,
+    "gpu_utilization_peak": 45.2
+  },
+  "artifacts": {
+    "response_path": "response_final.txt",
+    "metrics_path": "benchmark_final.txt",
+    "log_path": "run_log.txt"
+  }
+}
+```
+
+### Atomic-Write and Partial-File Conventions
+*   **Writing**: All output files (`response.txt`, `benchmark.txt`, `run_metadata.json`) must be written to a `.tmp` suffix (e.g., `response.txt.tmp`) while the process is running.
+*   **Finalization**: Upon successful state transition, the script atomically renames `file.tmp` to `file_final`.
+*   **Overwrite Protection**: If `file_final` exists and is newer than the current `run_id` timestamp, abort and return `CONFLICT`. If newer than the current run but older than the last successful run of the same identity, append a warning but do not overwrite (to preserve audit history of failed attempts).
+*   **Stdout/Stderr**: Redirected to a pipe captured by the Python core, then flushed to `run_log.txt`. No stdout/stderr should be printed directly to the terminal during execution to ensure logs are not mixed with control output.
+
+### Prompt Preservation
+*   The exact prompt bytes are hashed and stored in the `identity.prompt_hash`.
+*   The raw prompt is echoed to the model via stdin.
+*   The prompt is also logged to `run_log.txt` as the first line for manual audit if the model output is truncated.
+
+---
+
+# Analysis Integrity
+
+### Preventing Misleading Comparisons
+*   **Token Count Normalization**: Throughput is calculated as `tokens_generated / duration_seconds`. However, the comparison logic ignores runs where `tokens_generated < 10` (noise floor) unless explicitly configured.
+*   **Variable Generation Handling**: If a run generates fewer tokens than requested (e.g., OOM at token 50), the `duration` used for throughput calculation is capped at the time of the crash, and the `tokens_generated` is used as the numerator. This prevents comparing "50 tokens in 1 sec" against "256 tokens in 2 sec" where the former was a crash and the latter was a full run.
+*   **Partial Output Flagging**: Runs with `status != "success"` or `tokens_generated < max_tokens` are tagged `PARTIAL`. These are excluded from "best of N" charts unless the user explicitly requests `--include-partial`.
+
+### Parser Behavior for Unknown Output
+*   **Strict vs. Lenient**: The `benchmark.txt` parser attempts to parse the standard `llama.cpp` output format (tokens, time, memory).
+*   **Unknown Format Handling**: If the output format does not match the expected regex structure (e.g., non-numeric values, unexpected headers), the parser logs a `WARN: UNEXPECTED_METRICS_FORMAT` but proceeds with the last known numeric values if available, or defaults to `0.0` tokens/sec with a flag `METRICS_INCOMPLETE`. It does not halt the run.
+*   **Drift Handling**: If the output format changes between runs (e.g., new version of llama.cpp adds a new metric line), the parser skips unknown lines but extracts known keys.
+
+---
+
+# Test Plan
+
+1.  **Simulated Backend Failure (OOM)**
+    *   **Setup**: Run with `cuda` backend, small model, extremely high memory limit.
+    *   **Action**: Expect process to exit with SIGKILL/SIGSEGV after partial generation.
+    *   **Verification**: `response.txt` exists with partial content. `benchmark.txt` exists but is malformed or empty. `status` is `CRASH`. `tokens_generated` < `max_tokens`.
+
+2.  **Missing Monitor**
+    *   **Setup**: Run with `vulkan` backend, but unset `MONITOR_CONFIG` or kill the monitor agent before launch.
+    *   **Action**: Model runs to completion successfully.
+    *   **Verification**: `status` is `success`. `monitor_status` in metadata is `disconnected`. `memory_peak_mb` is `null`. No test failure; run passes.
+
+3.  **Prompt Containing Spaces/Newlines**
+    *   **Setup**: Define a prompt with embedded newlines and special characters: "Hello\nWorld\nTest".
+    *   **Action**: Run with `chat` workload.
+    *   **Verification**: `prompt_hash` changes if the whitespace is altered. `response.txt` contains the continuation. `run_log.txt` shows the raw prompt exactly as passed to stdin.
+
+4.  **Partial Output (Timeout)**
+    *   **Setup**: Run with `cpu` backend, very slow model, high `max_tokens`.
+    *   **Action**: Wait for the 60-second timeout.
+    *   **Verification**: Process killed. `status` is `TIMEOUT`. `tokens_generated` is > 0 but < `max_tokens`. `response.txt` has partial text.
+
+5.  **Changed Prompt Hash (Isolation)**
+    *   **Setup**: Run A with prompt "Hi". Run B with prompt "Hello".
+    *   **Action**: Execute both sequentially with the same model/backend/config.
+    *   **Verification**: `run_id`s differ. `identity.prompt_hash` differs. Artifacts for Run A do not contain Run B's output. `CONFLICT` logic prevents overwriting Run A's `response_final.txt` with Run B's output if timestamps are close.
+
+6.  **Malformed Performance Output**
+    *   **Setup**: Corrupt `benchmark.txt` (e.g., replace a number with text).
+    *   **Action**: Run successfully.
+    *   **Verification**: Parser detects corruption, logs `METRICS_INCOMPLETE`. Throughput calculated as 0 or based on last valid read. Run status remains `success` if model didn't crash.
+
+---
+
+# Pre-merge Review
+
+### Highest-Risk Design Flaws
+
+1.  **Flaw: Atomic File Operations on NFS/Network Filesystems**
+    *   **Risk**: Using `mv` for atomic writes assumes local POSIX filesystems. On NFS or network drives, `mv` may copy the file, breaking atomicity if the network hangs.
+    *   **Fix**: Implement a "move to temp, then rename" pattern where the final rename happens only after the OS guarantees the temp file is closed (using `fdatasync`), or use `ln -sf` followed by `mv` with a lock file to ensure the old file is truly gone before the new one is created. Alternatively, rely on `atomic_write` utility functions that handle locking explicitly.
+
+2.  **Flaw: Monitor Agent Zombie Processes**
+    *   **Risk**: If the monitor agent crashes or gets killed, it may remain as a zombie, consuming file descriptors and confusing the state machine regarding `MONITOR_FAILURE`.
+    *   **Fix**: Ensure the monitor agent is a daemon that explicitly calls `wait()` for its child processes or uses `waitpid` with non-blocking flags in the runner loop to clean up zombies immediately upon the model process exit. Add a specific `cleanup_zombies` step in `FINALIZING`.
+
+3.  **Flaw: Race Condition in Metadata Generation**
+    *   **Risk**: If two test runners are launched concurrently on the same machine (even briefly), they might write to the same `run_metadata.json` if the atomic rename fails or if the runner logic is flawed, causing the `run_id` to be overwritten.
+    *   **Fix**: Enforce strict directory locking per `run_id` using `flock` (fcntl) before writing the metadata file. Ensure the `run_id` generation includes a machine-unique ID (hostname + timestamp) to guarantee uniqueness across the system, not just per-process.
+
+[ Prompt: 8.8 t/s | Generation: 3.6 t/s ]
+
+
+Exiting...
