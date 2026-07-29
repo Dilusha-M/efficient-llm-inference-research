@@ -1,0 +1,215 @@
+warning: no usable GPU found, --gpu-layers option will be ignored
+warning: one possible reason is that llama.cpp was compiled without GPU support
+warning: consult docs/build.md for compilation instructions
+
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b10110-8f5ab832c
+model      : /home/dilusha/llm-research/models/Qwen/Qwen3.5-2B-GGUF/Qwen3.5-2B-Q4_K_M.gguf
+ftype      : Q4_K - Medium
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> You are simulating a senior coding-agent design review without external tools, internet access, shell commands, package installation, or file-system inspection. Work only from the specification and artifacts below. Be concrete enough that another engineer could implement and test the design.
+
+Project:
+A research project needs a command-line llama.cpp benchmark runner supporting CPU, CUDA, and Vulkan; model aliases from a configuration file; fixed workload prompts; performance output; hardware me ... (truncated)
+# Design Review: Llama.cpp Benchmark Runner
+
+## 1. Requirements and Invariants
+
+### Inputs
+*   **Configuration File (`benchmark_config.toml`)**: Defines the model (path/alias), backend (llama3, mistral, etc.), hardware backend (CUDA, Vulkan, CPU), environment variables, and workload type.
+*   **Workload Type**: One of `chat`, `batch`, `coding`, `summarization`, `agentic`, or `world_knowledge`. Defaults to `chat`.
+*   **Run Parameters**: Context size (default 4096), generation limit (default 256), temperature (default 0.7), and hardware-specific layer count (default 3072).
+
+### Artifacts
+*   **`run_id`**: A UUID generated per execution to isolate runs.
+*   **`response.txt`**: The raw, unformatted output from the benchmark process.
+*   **`metrics.json`**: A JSON file containing raw CPU/GPU timing data, context tokens, and generation tokens.
+*   **`hardware_metadata.json`**: A JSON file containing hardware details (model name, backend, GPU layers, driver version).
+
+### Success/Failure States
+*   **Success**: The run completes within the timeout threshold, produces valid `response.txt` and `metrics.json` (or their fallback equivalents), and the `hardware_metadata.json` is populated.
+*   **Failure**: The run aborts due to OOM, malformed metrics, timeout, or missing optional monitor data. In failure states, `metrics.json` and `hardware_metadata.json` must be explicitly marked as `null` or empty to distinguish them from a valid run.
+
+### Experimental Identity Tuple
+To prevent cross-contamination between runs, the runner must generate a tuple of immutable values upon startup:
+`(<model_path>, <backend>, <hardware_backend>, <context_size>, <gen_limit>, <temperature>, <build_info>)`.
+This tuple is stored alongside `run_id` and used to filter results during comparison.
+
+### Ambiguity to Resolve
+**The "Partial Output" Ambiguity.**
+The specification states: *"A model process may fail after creating partial output."*
+*   **Resolution Required**: Does a partial run count as "Success" (if metrics are present) or "Failure" (if no metrics)?
+    *   *Recommendation*: Define a "partial success" state where `metrics.json` exists but `response.txt` is truncated or malformed. The runner should log this as a "partial run" state rather than a full failure, allowing for re-runs to complete the write. This avoids over-quarantining valid partial data while preventing misleading throughput comparisons.
+
+---
+
+## 2. State-Machine Workflow
+
+The workflow is a deterministic state machine defined by the `run_id` and the configuration parameters.
+
+1.  **Validation Phase**:
+    *   Read `benchmark_config.toml`.
+    *   Validate that the model alias exists in the configuration (or default to a fallback).
+    *   Validate environment variables (e.g., `LLAMA_CPP_DEVICE`, `LLAMA_CPP_CONTEXT_SIZE`).
+    *   **State**: `VALIDATED`.
+
+2.  **Launch Phase**:
+    *   Construct the `run_id`.
+    *   Write the immutable identity tuple to a temporary file.
+    *   Write a startup banner to `run_id.log` (containing the prompt used).
+    *   **State**: `LAUNCHING`.
+    *   *Action*: Spawn the `llama.cpp` process with the specified backend, context, and limit.
+    *   *Fallback*: If the process fails immediately, transition to `FAILED_LAUNCH` with error details.
+
+3.  **Monitoring Phase (Conditional)**:
+    *   **Monitor Availability**:
+        *   If `LLAMA_CPP_MONITOR` env var is set to `enabled` or a monitor path is provided in config:
+            *   Write the monitor path to the config.
+            *   **State**: `MONITORING`.
+            *   *Action*: Create a separate `monitoring_process` to write to a dedicated stream (e.g., a file named `monitor.txt` in the run directory, or via a pipe).
+        *   If Monitor is disabled:
+            *   Skip monitoring process.
+            *   **State**: `MONITORING_DISABLED`.
+
+4.  **Exit Phase**:
+    *   **Process Normal Exit**: Close all child processes. If the benchmark process exits cleanly, transition to `FINALIZED`.
+    *   **Process Failure (OOM)**: Close benchmark process. Do *not* write `metrics.json`. Transition to `FAILED_RUN`.
+    *   **Process Failure (Timeout)**: Close benchmark process. Transition to `FAILED_RUN`.
+    *   **Process Failure (Malformed Metrics)**: Close benchmark process. Transition to `FINALIZED` *only if* `metrics.json` was written and readable. Transition to `FAILED_RUN` *only if* `metrics.json` is missing or unreadable.
+    *   **Monitor Failure**: If monitoring was active but the monitor process crashed or failed to write:
+        *   Close monitoring process.
+        *   Log the error in `run_id.log`.
+        *   Do *not* write `metrics.json` for the run. Transition to `FAILED_RUN`.
+
+5.  **Finalization**:
+    *   Generate the final `hardware_metadata.json` (populated only if the benchmark process completed successfully).
+    *   Write `response.txt` (the raw output).
+    *   Write `metrics.json` (if available and valid).
+    *   **State**: `COMPLETED`.
+
+---
+
+## 3. Auditable Design
+
+### Component Boundaries
+*   **`benchmark_runner` (Shell/Python)**:
+    *   **Responsibility**: Argument parsing, config reading, state machine orchestration, file I/O.
+    *   **Boundaries**: No direct access to the `llama.cpp` binary or process memory. It only reads files and spawns processes via `subprocess`.
+*   **`llama_runner` (Python)**:
+    *   **Responsibility**: Execute the `llama.cpp` binary.
+    *   **Boundaries**: Writes to `response.txt` and `metrics.json`. Exits with code 0 (success) or non-zero (failure).
+*   **`monitor_handler` (Python)**:
+    *   **Responsibility**: Handle optional monitoring data if `LLAMA_CPP_MONITOR` is set.
+    *   **Boundaries**: Writes to the monitoring stream. Handles connection closures gracefully.
+
+### Metadata Schema
+*   **`metrics.json`**:
+    ```json
+    {
+      "context_tokens": <int>,
+      "generated_tokens": <int>,
+      "latency_us": [float],
+      "duration_ms": <float>,
+      "backend": "llama3" | "mistral" | "vulkan",
+      "hardware": "<device_name>"
+    }
+    ```
+    *Note*: If the benchmark process fails to write this, the file is not created or is empty.
+
+### Atomic-Write and Partial-File Conventions
+*   **Raw Output (`response.txt`)**:
+    *   **Convention**: Raw stdout/stderr is appended to a file named `run_id_response.txt` in the same directory as the benchmark process.
+    *   **Preservation**: The benchmark process must write its raw output to this file *immediately* after generation, before any cleanup occurs. This ensures the "raw output" requirement is met without external buffering.
+*   **Performance Metrics (`metrics.json`)**:
+    *   **Convention**: A JSON file is written atomically to a path specified in `benchmark_config.toml` (e.g., `benchmark_output/metrics.json`).
+    *   **Partial File Handling**: If the `llama.cpp` process crashes *after* writing `metrics.json` but *before* closing the file, the file will be truncated. The runner should detect this (via `os.path.getsize()` or `try/except` on `open`) and, if the file is missing or truncated significantly, assume the run failed and do not overwrite `metrics.json` in the final run state. This prevents corrupted "partial" metrics from appearing in the final run results.
+
+### Prompt Preservation
+*   The runner captures the prompt used at the start of the benchmark into a variable `start_prompt`.
+*   This variable is stored in `run_id.log`.
+*   The `start_prompt` is **not** written to `response.txt`. The requirement specifies "Raw output must remain available," implying the prompt itself is excluded from the raw output stream.
+
+---
+
+## 4. Analysis Integrity
+
+### Preventing Misleading Throughput Comparison
+A failed run or one with variable generated-token counts can skew throughput metrics (tokens per second) because the denominator (time) is wrong or the numerator (tokens) is inconsistent.
+*   **Fix**: Enforce a **strict minimum generation threshold**.
+    *   If `metrics.json` is present but `generated_tokens` is `0` or falls below a configured floor (e.g., 100), mark the run as `INCOMPLETE`.
+    *   **Consequence**: Do not include `INCOMPLETE` runs in the final throughput calculation. Only runs with both `context_tokens` and `generated_tokens` > 0 are included in the final aggregate.
+*   **Fix**: Ensure `metrics.json` contains the *raw* timing data (latency, duration) rather than a *derived* throughput metric. The throughput calculation is derived from the raw data; if the raw data is corrupted (due to a crash during write), the derived metric is unreliable. By failing the write phase (as per the state machine), the runner ensures the raw data is not corrupted, preserving the integrity of the derived metric.
+
+### Parser for Unknown Llama.cpp Output Formats
+The `response.txt` stream may vary depending on the specific `llama.cpp` build or backend.
+*   **Strategy**: Implement a robust, stateless parser that expects a specific contract.
+    *   **Expected Contract**: The output begins with the `context` count, followed by the `generated` count, then a newline, followed by the raw log text (or specific JSON lines).
+    *   **Fallback**: If the parser cannot reliably distinguish tokens from log text (e.g., due to whitespace differences or custom log formats), the runner should log a warning in `run_id.log` but still attempt to extract numeric tokens if possible.
+    *   **Rejection**: If the parser consistently fails to extract the token counts (e.g., it thinks it is reading a log file), the runner should treat the file as `error.txt` (if available) or simply skip the parsing step and log a `MALFORMED_METRICS` error, ensuring the state machine correctly transitions to `FAILED_RUN` rather than silently misinterpreting data.
+
+---
+
+## 5. Test Plan
+
+The following tests verify the design constraints and handle specific edge cases.
+
+1.  **Backend Failure (Simulated)**:
+    *   **Scenario**: Mock the `llama.cpp` subprocess to raise an exception immediately after the identity tuple is written but before the process starts.
+    *   **Goal**: Verify the state machine transitions to `FAILED_RUN` and that `metrics.json` and `hardware_metadata.json` are not written to disk.
+
+2.  **Missing Monitor**:
+    *   **Scenario**: Run the benchmark without setting `LLAMA_CPP_MONITOR` and without a monitor path in config.
+    *   **Goal**: Verify the runner skips the monitoring process entirely and produces a valid `run_id` and `response.txt` without triggering a monitoring error.
+
+3.  **Prompt Containing Spaces/Newlines**:
+    *   **Scenario**: Construct a benchmark with a prompt string containing spaces and newlines (e.g., `Prompt: "Hello\nWorld"`).
+    *   **Goal**: Verify that the `start_prompt` is correctly captured in `run_id.log` and is used in the output, while the raw `response.txt` is clean. Also verify the identity tuple includes the prompt content.
+
+4.  **Partial Output**:
+    *   **Scenario**: Modify the `llama.cpp` process to write partial metrics to the output stream and then crash (exit code != 0) before finishing.
+    *   **Goal**: Verify the runner detects the process exit, fails to write `metrics.json`, and logs the error appropriately without overwriting valid partial data.
+
+5.  **Changed Prompt Hash**:
+    *   **Scenario**: Run the benchmark twice. Run 1 uses prompt A. Run 2 uses prompt B.
+    *   **Goal**: Verify that the `run_id` is different, the `start_prompt` differs, and the final results (tokens generated) differ, proving the identity tuple filters out cross-contamination.
+
+6.  **Prompts with Spaces/Newlines**:
+    *   **Scenario**: (Redundant with #3, but verified for robustness) Use a prompt with multiple newlines.
+    *   **Goal**: Verify that the parser correctly handles the output stream even if the input prompt was complex.
+
+---
+
+## 6. Pre-Merge Review
+
+### Top 3 Risks and Fixes
+
+| Risk ID | Design Flaw Description | Impact | Proposed Fix |
+| :--- | :--- | :--- | :--- |
+| **R1** | **Inconsistent State Machine for Partial Runs**: The specification allows a process to fail after creating partial output. The current review proposal treats this as a hard "Failure" state, preventing re-runs. This hides the possibility that the benchmark is merely incomplete. | **False Negative**: Valid workloads that are just slow or taking a long time to complete are incorrectly flagged as failures, leading to inaccurate throughput averages. | Adopt a "Partial Success" state. Allow the runner to write `metrics.json` for partial runs. Allow the benchmark to be re-runnable. Mark runs as `partial` if metrics are present but output is truncated. |
+| **R2** | **Silent Metric Corruption**: If `metrics.json` is written to a file that is then truncated by a crash, the file might appear valid in the final run state. | **Data Corruption**: The final `metrics.json` might contain a truncated version of the metrics, leading to incorrect performance analysis. | Enforce atomic writes using a temp file + rename pattern, or strictly enforce a "No Crash After Write" policy in the benchmark binary. If a crash occurs after write, explicitly overwrite the file or log a "Corrupted Write" error. |
+| **R3** | **Ambiguous Identity Tuple**: The specification lists a long list of filters (model, backend, etc.) for comparison but does not explicitly define *which* of these values are part of the identity tuple that guarantees isolation. | **Security/Reliability**: Without a precise definition of the identity tuple, engineers cannot reliably implement the filtering logic, risking accidental cross-contamination. | Define the Identity Tuple explicitly as `<model_path>, <backend>, <hardware_backend>, <context_size>, <gen_limit>, <temperature>, <build_info>`. Ensure the filtering logic is implemented strictly against this tuple. |
+
+[ Prompt: 22.2 t/s | Generation: 9.1 t/s ]
+
+
+Exiting...

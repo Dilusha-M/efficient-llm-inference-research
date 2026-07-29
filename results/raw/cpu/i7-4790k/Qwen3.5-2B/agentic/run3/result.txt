@@ -1,0 +1,208 @@
+Input prompt
+
+You are simulating a senior coding-agent design review without external tools, internet access, shell commands, package installation, or file-system inspection. Work only from the specification and artifacts below. Be concrete enough that another engineer could implement and test the design.
+
+Project:
+A research project needs a command-line llama.cpp benchmark runner supporting CPU, CUDA, and Vulkan; model aliases from a configuration file; fixed workload prompts; performance output; hardware metadata; resource monitoring; and one metadata file per run. Raw output must remain available for manual audit. The runner must distinguish a failed model run from missing optional monitoring data.
+
+Existing constraints:
+* Each condition is repeated three times and compared manually using each run's `response.txt`/raw response plus metrics.
+* The default context is 4096, generation limit 256, temperature 0.7, and CPU thread count 1; a workload may override context explicitly.
+* Workloads are `chat`, `batch`, `coding`, `summarization`, `agentic`, and `world_knowledge`.
+* The runner must not mix results if model file, backend, hardware label, context, generation limit, prompt, temperature, GPU layers, build, or driver environment changes.
+* Monitors may be unavailable or sampled sparsely. A model process may fail after creating partial output.
+
+Required deliverables:
+1. Requirements and invariants: list inputs, artifacts, success/failure states, and the experimental identity tuple. Identify at least one ambiguity that must be resolved before implementation.
+2. State-machine workflow: describe the lifecycle from validation through launch, monitoring, process exit, and finalization, including what happens on timeout, OOM, malformed performance output, and monitor failure.
+3. Auditable design: propose shell/Python component boundaries, a metadata schema, atomic-write or partial-file conventions, and how to preserve stdout/stderr and the exact prompt used.
+4. Analysis integrity: explain how to prevent a failed run or variable generated-token count from producing a misleading throughput comparison, and how a parser should treat unknown llama.cpp output formats.
+5. Test plan: provide at least six tests, including one simulated backend failure, one missing monitor, one prompt containing spaces/newlines, one partial output, and one changed prompt hash.
+6. Pre-merge review: name the three highest-risk design flaws in your proposal and the concrete changes that would fix them.
+
+Use these exact headings: Requirements and Invariants; State Machine; Auditable Design; Analysis Integrity; Test Plan; Pre-merge Review. Keep the design implementation-oriented and avoid claiming that a metric is available if the specification does not guarantee it.
+
+Final model response
+
+warning: no usable GPU found, --gpu-layers option will be ignored
+warning: one possible reason is that llama.cpp was compiled without GPU support
+warning: consult docs/build.md for compilation instructions
+
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b10110-8f5ab832c
+model      : /home/dilusha/llm-research/models/Qwen/Qwen3.5-2B-GGUF/Qwen3.5-2B-Q4_K_M.gguf
+ftype      : Q4_K - Medium
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> You are simulating a senior coding-agent design review without external tools, internet access, shell commands, package installation, or file-system inspection. Work only from the specification and artifacts below. Be concrete enough that another engineer could implement and test the design.
+
+Project:
+A research project needs a command-line llama.cpp benchmark runner supporting CPU, CUDA, and Vulkan; model aliases from a configuration file; fixed workload prompts; performance output; hardware me ... (truncated)
+# Requirements and Invariants
+
+**Inputs**
+*   `config.yaml`: Defines the experiment identity (model path, backend, hardware label, context size, max generation, temperature, thread count).
+*   `prompts.json`: A fixed set of strings defining the workload (e.g., `chat`, `coding`, `summarization`). One string per workload.
+*   `hardware.txt`: Hardware metadata (model name, GPU capability, driver version) to be outputted.
+
+**Artifacts**
+*   `response.txt`: The raw, unmodified stdout/stderr stream from the llama.cpp process.
+*   `metrics.csv`: A CSV file containing parsed metrics (tokens generated, time elapsed, etc.) *only if* the process exits cleanly and the monitoring system is active.
+*   `run_id.txt`: A generated UUID or timestamp marking the start of the run.
+*   `status.log`: A log file containing the final exit code and a boolean flag indicating whether a monitor was present.
+*   `raw_dump`: A sidecar JSON file generated by the runner immediately before the process exit, containing a dump of the process tree, memory usage, and raw output buffer contents at the moment of termination.
+
+**Success State**
+*   Process exits with code 0.
+*   `response.txt` ends with a newline.
+*   `metrics.csv` contains valid numeric data.
+*   `raw_dump` is non-empty.
+
+**Failure State**
+*   Process exits with non-zero code.
+*   `metrics.csv` is empty.
+*   `raw_dump` is empty or contains only error messages.
+
+**Experimental Identity Tuple**
+The system must maintain a consistent tuple of `(model_path, backend, hardware_label, context_size, max_gen, temp, threads)` that is immutable within a single run and serves as the primary key for grouping results.
+
+**Ambiguity to Be Resolved**
+The specification does not explicitly define the handling of **multiple monitors**. If a user provides multiple `--monitor` arguments, does the runner:
+1.  Fail immediately if *any* monitor fails?
+2.  Aggregate all metrics into a single stream?
+3.  Log the specific failure mode of each monitor?
+
+*Decision: Option 1 (Fail on any failure) is chosen for strict consistency, as the specification requires distinguishing failed runs from missing optional data. However, this creates a high-risk design flaw regarding the "partial output" condition mentioned in the constraints.*
+
+---
+
+# State-Machine Workflow
+
+1.  **Validation Phase**
+    *   Read `config.yaml`. Validate that required fields exist.
+    *   Validate that `prompts.json` contains exactly one string per workload.
+    *   Determine the "Experimental Identity" tuple from config.
+    *   Verify no conflicting parameters (e.g., context size mismatch) override the identity tuple. If conflicts exist, reject the run.
+
+2.  **Launch Phase**
+    *   Construct the command line for `llama.cpp` based on the identity tuple.
+    *   Write `run_id.txt` to a temp file.
+    *   Write `raw_dump` to a temp file containing a snapshot of the process tree, memory stats, and the initial buffer contents.
+    *   **Critical Check:** Verify if the hardware label (from config) is supported by the current `driver_environment` variable (e.g., `CUDA` vs `Vulkan`). If not, log a warning but proceed; do not abort the run.
+    *   Start the llama.cpp process in the foreground or background.
+
+3.  **Monitoring & Streaming Phase**
+    *   If `--monitor` arguments are present:
+        *   Initialize the monitoring pipeline.
+        *   Continuously poll for `SIGTERM` or `SIGINT`.
+        *   If a monitor signal is received *before* the process exits, write the metrics to `metrics.csv` asynchronously.
+    *   If no monitors are present:
+        *   Disable the monitoring pipeline.
+        *   Wait for the process to finish.
+
+4.  **Process Exit & Finalization Phase**
+    *   **Timeout:** If the process runs longer than the configured timeout, terminate it gracefully (kill with SIGTERM) and log "Timeout".
+    *   **OOM:** If `OOM` is detected, terminate the process and log "OOM".
+    *   **Partial Output:** If the process crashes *after* outputting some tokens but before writing the full response, the runner must:
+        *   Close the monitoring pipeline immediately.
+        *   Write the current `raw_dump` to the final artifact.
+        *   Record the specific state of the buffer (e.g., "Partial" or "Incomplete").
+        *   *Self-Correction/Constraint Check:* The spec states "Raw output must remain available for manual audit." If the process crashes, the raw output is lost. The `raw_dump` serves this purpose, but the `raw_dump` must contain the *complete* buffer content, not just an error log.
+    *   **Malformed Metrics:** If `metrics.csv` is malformed or empty but a valid `raw_dump` exists, treat this as a failure state (see Failure State definition above).
+
+5.  **Finalization**
+    *   Delete temporary files (`run_id.txt`, `raw_dump`, etc.).
+    *   Output the final `status.log` indicating success/failure.
+    *   Output the hardware metadata and final prompt hash.
+
+---
+
+# Auditable Design
+
+**Component Boundaries**
+*   **Runner (Python):** Orchestrates the command line, reads config, manages the state machine, writes the final artifacts, and handles cleanup.
+*   **Metrics Collector (Python):** A lightweight wrapper around `psutil` (or a custom library) that reads `/proc` filesystem or `llama.cpp` specific monitor logs. It is responsible for parsing `metrics.csv`.
+*   **Monitor Interface (C++/Llama.cpp):** Exposes an interface to the llama.cpp library for metrics collection. The Runner delegates to this interface.
+*   **Shell Wrapper:** Provides argument parsing, timeout handling, and the initial call to the C++ binary.
+
+**Metadata Schema**
+The `metrics.csv` must follow this schema to ensure parseability:
+```csv
+metric_name,metric_value,unit
+tokens_generated,123456,
+time_elapsed_sec,0.5
+backend,CLM
+```
+*   **Rule:** If the parser cannot read a value for a metric, it must default to `0` or `null` rather than crashing, but this does not invalidate the run if other metrics are present.
+
+**Atomic-Write and Partial-File Conventions**
+*   **Atomic-Write:** All text files (`run_id.txt`, `status.log`, `metrics.csv`) are written to temporary files in `/tmp` within the same Python process. The runner atomically renames the temp file to the final path upon successful completion.
+*   **Partial-File Convention:** If a process exits with a non-zero status *after* outputting partial output, the `raw_dump` file must contain the **full content** of the process buffer, not just a summary. The file must be readable by an auditor to reconstruct the output stream.
+
+**Preservation of Stdout/Stderr**
+*   The `raw_dump` file will contain the exact bytes of the stdout/stderr stream captured at the moment of termination.
+*   The `response.txt` file will contain the same bytes, prefixed with the prompt used.
+*   The `run_id.txt` will contain a hash of the prompt + config hash to serve as a checksum for the audit.
+
+---
+
+# Analysis Integrity
+
+**Preventing Misleading Throughput**
+*   **Issue:** A run with a "failed" model might show 0 tokens generated but 0.5s elapsed time, while a successful run shows 100,000 tokens and 0.5s. This looks like the failed run is faster.
+*   **Fix:** Ensure the `raw_dump` and `metrics.csv` are only populated if the process exits with code 0. If the process exits with a non-zero code (even if it printed 0 tokens), the runner must **not** write `metrics.csv`. The audit report for a "failed" run must explicitly state "Run Failed: No valid metrics generated." The throughput metric must be calculated only on the subset of runs where the process terminated cleanly with a valid metrics file.
+
+**Handling Unknown Llama.cpp Output Formats**
+*   **Issue:** Raw llama.cpp output is binary or text-based depending on the backend (CLM, GEMM, etc.), making fixed parsing for "tokens" unreliable across different builds or configurations.
+*   **Fix:** The parser must implement a **robust tokenizer fallback**.
+    1.  Attempt to parse using the library's built-in tokenizer first.
+    2.  If that fails (e.g., binary stream), attempt to parse the raw bytes using standard text tokenization logic (e.g., `llama.cpp`'s `LlamaTokenizer`).
+    3.  If both fail, do not crash; instead, log a warning in `status.log` and default the token count to `0` or `unknown`.
+    4.  The `raw_dump` must include the *decoded* token count derived from the fallback logic, ensuring the auditor can verify the "raw" count against the "parsed" count.
+
+---
+
+# Test Plan
+
+1.  **Backend Failure Simulation:**
+    *   **Scenario:** A mock `llama.cpp` process is started that returns a non-zero exit code immediately.
+    *   **Check:** Verify the runner writes no `metrics.csv` and logs a clear "Run Failed" message, distinguishing it from a timeout.
+
+2.  **Missing Monitor:**
+    *   **Scenario:** A real `llama.cpp` process running but no `--monitor` argument provided.
+    *   **Check:** Verify that `metrics.csv` is created but contains *no* data rows, and `status.log` reflects a successful run with missing optional data.
+
+3.  **Prompt Containing Spaces/Newlines:**
+    *   **Scenario:** The `prompts.json` contains a prompt string with embedded spaces (e.g., "Hello, how are you?").
+    *   **Check:** Verify the runner handles the context string correctly, generates a valid `run_id.txt` hash, and does not truncate the prompt.
+
+4.  **Partial Output (Crash in middle):**
+    *   **Scenario:** The `llama.cpp` process generates tokens but crashes (OOM or Kill) halfway through the generation.
+    *   **Check:** Verify that `raw_dump` is populated with the buffer content, and the runner writes the `status.log` indicating a "Partial Output" state, allowing the auditor to see exactly how many tokens were generated before the crash.
+
+5.  **Changed Prompt Hash:**
+    *   **Scenario:** The `config.yaml` is modified to change the `model_path`.
+    *   **Check:** Verify the runner detects the hash change in the config, rejects the run, and logs a "Conflicting Identity" error, ensuring the output is not mixed with the previous run's data.
+
+6.  **Malformed Metrics Parsing:**
+    *   **Scenario:** A `llama.cpp` run produces valid `raw_dump` but the `metrics.csv` parser encounters a malformed line in the CSV.
+    *   **Check:** Verify the runner handles the malformed line gracefully, skips it, and continues to write the `raw_dump` without crashing the entire pipeline.

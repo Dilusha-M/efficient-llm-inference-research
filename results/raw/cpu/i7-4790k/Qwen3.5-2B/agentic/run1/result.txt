@@ -1,0 +1,217 @@
+Input prompt
+
+You are simulating a senior coding-agent design review without external tools, internet access, shell commands, package installation, or file-system inspection. Work only from the specification and artifacts below. Be concrete enough that another engineer could implement and test the design.
+
+Project:
+A research project needs a command-line llama.cpp benchmark runner supporting CPU, CUDA, and Vulkan; model aliases from a configuration file; fixed workload prompts; performance output; hardware metadata; resource monitoring; and one metadata file per run. Raw output must remain available for manual audit. The runner must distinguish a failed model run from missing optional monitoring data.
+
+Existing constraints:
+* Each condition is repeated three times and compared manually using each run's `response.txt`/raw response plus metrics.
+* The default context is 4096, generation limit 256, temperature 0.7, and CPU thread count 1; a workload may override context explicitly.
+* Workloads are `chat`, `batch`, `coding`, `summarization`, `agentic`, and `world_knowledge`.
+* The runner must not mix results if model file, backend, hardware label, context, generation limit, prompt, temperature, GPU layers, build, or driver environment changes.
+* Monitors may be unavailable or sampled sparsely. A model process may fail after creating partial output.
+
+Required deliverables:
+1. Requirements and invariants: list inputs, artifacts, success/failure states, and the experimental identity tuple. Identify at least one ambiguity that must be resolved before implementation.
+2. State-machine workflow: describe the lifecycle from validation through launch, monitoring, process exit, and finalization, including what happens on timeout, OOM, malformed performance output, and monitor failure.
+3. Auditable design: propose shell/Python component boundaries, a metadata schema, atomic-write or partial-file conventions, and how to preserve stdout/stderr and the exact prompt used.
+4. Analysis integrity: explain how to prevent a failed run or variable generated-token count from producing a misleading throughput comparison, and how a parser should treat unknown llama.cpp output formats.
+5. Test plan: provide at least six tests, including one simulated backend failure, one missing monitor, one prompt containing spaces/newlines, one partial output, and one changed prompt hash.
+6. Pre-merge review: name the three highest-risk design flaws in your proposal and the concrete changes that would fix them.
+
+Use these exact headings: Requirements and Invariants; State Machine; Auditable Design; Analysis Integrity; Test Plan; Pre-merge Review. Keep the design implementation-oriented and avoid claiming that a metric is available if the specification does not guarantee it.
+
+Final model response
+
+warning: no usable GPU found, --gpu-layers option will be ignored
+warning: one possible reason is that llama.cpp was compiled without GPU support
+warning: consult docs/build.md for compilation instructions
+
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b10110-8f5ab832c
+model      : /home/dilusha/llm-research/models/Qwen/Qwen3.5-2B-GGUF/Qwen3.5-2B-Q4_K_M.gguf
+ftype      : Q4_K - Medium
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> You are simulating a senior coding-agent design review without external tools, internet access, shell commands, package installation, or file-system inspection. Work only from the specification and artifacts below. Be concrete enough that another engineer could implement and test the design.
+
+Project:
+A research project needs a command-line llama.cpp benchmark runner supporting CPU, CUDA, and Vulkan; model aliases from a configuration file; fixed workload prompts; performance output; hardware me ... (truncated)
+# Project: Llama.cpp Benchmark Runner
+
+## 1. Requirements and Invariants
+
+### Inputs
+*   **Configuration File**: `benchmark.yaml` (or similar), containing model aliases, hardware labels, build info, and optional overrides for context size, generation limit, temperature, or thread count.
+*   **Prompt Template**: A fixed or configurable string (e.g., "Here is a task...") passed to the CLI.
+*   **Environment Metadata**: Hardware architecture, driver version, runtime environment.
+
+### Artifacts
+*   **`run_metrics`**: A JSON object containing `latency_ms`, `throughput_tokens_per_sec`, `wall_time_sec`, and `model_size_gb` (derived from `model_path`).
+*   **`run_metadata`**: A JSON object containing `run_id`, `timestamp`, `model_alias`, `backend`, `hardware_label`, `context_size`, `gen_limit`, `temp`, `thread_count`.
+*   **`stdout_raw`**: The complete raw stdout stream of the benchmark process.
+*   **`stderr_raw`**: The complete raw stderr stream of the benchmark process.
+*   **`process_pid`**: The process ID of the benchmark executable.
+
+### Success/Failure States
+*   **Success**: The benchmark completes within the timeout window. Metrics are populated.
+*   **Failure (Explicit)**: A specific failure marker (`"status": "failed"` or `"error": "..."`) is explicitly reported in the JSON.
+*   **Failure (Implicit)**: The process exits with a non-zero status code that is not explicitly reported in the JSON but implies resource exhaustion (OOM).
+*   **Ambiguity**: The specification does not define the exact exit code for "OOM" (Out of Memory). A process OOM-terminating but with a valid JSON exit code of 0 must be classified as "failed" rather than "success" to ensure data integrity, though the runner must detect this via file descriptor monitoring.
+
+### The Experimental Identity Tuple
+To ensure isolation between runs, every successful run must carry this tuple in the `run_metadata`:
+```json
+{
+  "context_size": 4096,
+  "gen_limit": 256,
+  "temperature": 0.7,
+  "thread_count": 1,
+  "model_path": "/path/to/model.gguf",
+  "model_size_gb": 12.5,
+  "backend": "llama3",
+  "hardware_label": "cuda",
+  "prompt_hash": "sha256:..."
+}
+```
+*Note: The `prompt_hash` is computed from the prompt string used.*
+
+---
+
+## 2. State-Machine Workflow
+
+The runner operates as a state machine with the following transitions:
+
+1.  **Initialize**:
+    *   Read `benchmark.yaml` to populate the `run_metadata` with defaults.
+    *   Construct the full prompt string (default: "Here is a task...", overridden by config).
+    *   **Validation Step**: Verify `model_path` exists and is a valid GGUF file.
+    *   **Ambiguity Resolution**: If the prompt string contains special characters (like newlines) that are not allowed by the underlying CLI, the runner must truncate to the last newline or use a sanitized version. This is a critical step to prevent silent corruption of the benchmark identity.
+
+2.  **Launch**:
+    *   Execute the `llama-cli` (or `llama.cpp` wrapper) with the `-p <model_path> -m <model_path> --model-alias <alias>` flags.
+    *   **Context/Gen Limit Override**: If `benchmark.yaml` specifies different values, inject them into the CLI invocation.
+    *   **Prompt Injection**: Embed the full prompt into the CLI's stdin.
+
+3.  **Monitor & Poll**:
+    *   **Monitor Status**: Periodically check if a monitoring process (e.g., `monitor.sh`) exists.
+        *   *If Present*: Poll its PID for JSON output.
+        *   *If Absent*: Assume `metrics` are `null` or `not_available`.
+    *   **Process Lifecycle**: Wait for the benchmark process to terminate.
+        *   *Normal Exit*: Wait for `0`.
+        *   *OOM Exit*: Wait for `-1` (Linux) or detect `SIGKILL`/`SIGSEGV` from the monitor.
+        *   *Timeout*: Wait for a timeout duration (e.g., 30s). If not terminated, trigger a failure state.
+
+4.  **Parse & Finalize**:
+    *   **Success State**: If `status` is `"success"`, extract metrics. If `metrics` are `null` or missing, mark the run as "failed" due to missing data.
+    *   **Failure State**:
+        *   *Explicit Failure*: If `status` is `"failed"`, stop and report the error message.
+        *   *Implicit Failure (OOM)*: If the process died with a non-zero exit code (detected via `ps` or `/proc`) but the JSON says `success`, flag the run as "resource exhausted".
+    *   **Output Handling**:
+        *   Append `stdout_raw` and `stderr_raw` to the run's artifact storage.
+        *   Clean up temporary files (e.g., `process.pid`, `metrics.json`) only if they were created during the run.
+
+5.  **Cleanup**:
+    *   Remove temporary files.
+    *   Ensure no orphaned processes remain.
+
+---
+
+## 3. Auditable Design
+
+### Component Boundaries
+*   **Validation Layer (Python)**: Handles config parsing, prompt sanitization, and existence checks.
+*   **Execution Layer (Python)**: Orchestrates the subprocess launch, handles monitoring polling, and manages the state machine logic.
+*   **Output Layer (Shell/Script)**: Executes the CLI, captures streams, and formats the JSON.
+
+### Metadata Schema
+The JSON schema for `run_metadata` and `run_metrics` is strict. No fields are allowed to float in the JSON unless explicitly defined in the schema.
+
+```json
+{
+  "run_id": "uuid",
+  "timestamp": "ISO8601",
+  "model_path": "/path/to/model.gguf",
+  "model_size_gb": 12.5, // Must be a number
+  "backend": "llama3",
+  "hardware_label": "cuda",
+  "context_size": 4096, // Must match 'benchmark.yaml' default if not overridden
+  "gen_limit": 256,
+  "temperature": 0.7,
+  "thread_count": 1,
+  "prompt_hash": "sha256:...",
+  "status": "success" | "failed",
+  "error_message": "null"
+}
+```
+
+### Atomic-Write and Partial-File Conventions
+*   **Artifacts**: All files are written to disk immediately upon completion.
+*   **stdout/stderr**: Written to temporary files (`run_stdout.tmp`, `run_stderr.tmp`) immediately after the process finishes. These are moved to `run_artifacts/` immediately after the runner finishes. **Crucial:** Do not pipe `cat` into the process. This prevents buffering issues and ensures the raw stream is truly raw.
+*   **Partial Files**: If the benchmark exits early due to OOM, the runner must delete the `metrics.json` file to prevent a partial JSON from lingering. This ensures that a "missing file" error is distinct from a "success with missing data" error.
+
+### Handling Unknown Formats
+The parser should use a robust regex or a library like `llama-cpp-python`'s `llama_model` object to parse output.
+*   If the output is not a valid JSON object, the parser should catch the exception, log it to `run_metadata.error_message`, and **not** crash the runner.
+*   It should continue processing other metrics (if available) or simply mark the run as "failed" with a descriptive message like "Invalid performance output format detected".
+
+---
+
+## 4. Analysis Integrity
+
+### Preventing Misleading Throughput
+The primary source of error is **variable generated-token count**. Throughput is defined as `tokens_generated / wall_time`.
+*   **Risk**: A run that finishes in 5.0s but generates 50 tokens yields a throughput of 10,000 tokens/sec. A run that finishes in 5.0s and generates 500 tokens yields 10,000 tokens/sec.
+*   **Mitigation**: The benchmark runner must strictly enforce a **fixed generated token count** (e.g., exactly 500) regardless of runtime.
+    *   *Implementation*: The CLI or a wrapper script injected by the runner must force the generation of exactly `X` tokens before reporting completion. If the process naturally terminates early, the runner must capture the *actual* time taken, but the *reported* throughput must be derived from the *forced* count, not the actual count.
+    *   *Alternative*: If forced generation is impossible, the runner should report `tokens_generated: <actual_count>` but ensure the `wall_time` is dominated by the mandatory steps, or simply fail the "throughput" metric calculation if the output is variable.
+    *   *Strict Interpretation*: As per the prompt "Raw output must remain available", the runner must **not** alter the raw output to force token count. Instead, the analysis script must calculate throughput as `actual_tokens / wall_time`. To prevent the *comparison* from being misleading, the runner should only report the `throughput` metric if the runtime is within a tight tolerance (e.g., < 1s) AND the token count is exactly 500. If the runtime is long, the throughput is irrelevant.
+
+### Parser for Unknown Formats
+If the benchmark outputs text instead of JSON (e.g., a custom report format):
+1.  **Graceful Degradation**: The parser should attempt to parse JSON first. If it fails, it should attempt to parse Markdown/Text blocks.
+2.  **Fallback**: If parsing fails on all attempts, the `run_metadata` should be updated with `error_message: "Unknown output format"`.
+3.  **No Crash**: The runner must never terminate unexpectedly. It should return a non-zero exit code only if the *data* is corrupted in a way that makes the benchmark unusable, not if it cannot parse a specific format.
+
+---
+
+## 5. Test Plan
+
+1.  **Baseline Performance**: Run the benchmark against a known model (e.g., Mistral) with default config. Verify metrics are JSON-formatted and positive.
+2.  **Backend Failure Simulation**: Start a fake benchmark process that hits `SIGSEGV` immediately upon initialization. Verify the runner detects the process died without valid metrics, sets `status` to `failed`, and logs the error.
+3.  **Missing Monitor**: Simulate the absence of the `monitor.sh` process by killing it beforehand. Verify the runner skips polling, sets `metrics` to `null`, and marks the run as `status: "success"` with `metrics: null` (as per spec: "distinguish a failed model run from missing optional monitoring data").
+4.  **Prompt with Spaces/Newlines**: Construct a prompt containing newlines `\n\n`. Verify the runner handles the input stream correctly and does not corrupt the JSON output or crash.
+5.  **Partial Output Simulation**: Force the benchmark process to exit via `SIGKILL` (e.g., by killing the parent PID) after 2 seconds. Verify the runner detects this, cleans up partial files, and marks the run as `status: "failed"` (or `resource exhausted`).
+6.  **Changed Prompt Hash**: Change the prompt string used in the test run. Verify the runner calculates a new `prompt_hash`, updates `run_metadata`, and re-runs the analysis to confirm the hash changes correctly.
+
+---
+
+## 6. Pre-Merge Review
+
+### Top 3 Highest-Risk Design Flaws
+
+| Risk ID | Flaw Description | Concrete Fix |
+| :--- | :--- | :--- |
+| **R1** | **Metric Drift due to Variable Runtime**: The benchmark allows the runtime to vary, causing throughput (tokens/sec) to differ by orders of magnitude for the same model. | **Enforce Fixed Token Count**: Inject a fixed token count (e.g., 500) into the benchmark process via a wrapper script before launch. Ensure the `wall_time` is the *actual* time taken, even if the *reported* count was fixed. Report the actual ratio or fail the metric if the runtime is too long. |
+| **R2** | **Partial File Pollution**: If a benchmark crashes mid-run (OOM), the runner creates a `metrics.json` file with partial data. If this file is not deleted, a subsequent run might inherit corrupted state. | **Strict File Cleanup**: Implement a "Partial File Cleanup" step. Immediately delete `metrics.json` if the process dies with a non-zero exit code *before* the runner verifies the file is gone. Add a dry-run check to ensure no partial files remain in the artifact directory. |
+| **R3** | **Ambiguity on "Failed" vs "OOM"**: The spec requires distinguishing a failed run from missing monitor data. It does not specify the exit code for OOM. | **Define OOM Exit Code**: Explicitly define that if the process dies with a non-zero exit code (detected via `/proc`) but no explicit JSON error, the runner must treat this as a "failed" run (or a specific "resource exhausted" category) rather than an "OOM" error, to ensure the output JSON remains clean and consistent. |
