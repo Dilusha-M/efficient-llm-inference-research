@@ -1,0 +1,80 @@
+warning: no usable GPU found, --gpu-layers option will be ignored
+warning: one possible reason is that llama.cpp was compiled without GPU support
+warning: consult docs/build.md for compilation instructions
+
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b10110-8f5ab832c
+model      : /home/dilusha/llm-research/models/Gemma/gemma-4-E2B-it-GGUF/gemma-4-E2B-it-Q4_K_M.gguf
+ftype      : Q4_K - Medium
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> Summarize the following technical document. Focus on the experimental design, measurement methodology, limitations, and reproducibility implications.
+
+Technical document:
+
+Large language model inference on consumer hardware is constrained by a combination of memory capacity, memory bandwidth, compute throughput, software backend maturity, and workload shape. Unlike training, inference is often dominated by repeated matrix-vector operations during autoregressive decoding. During prompt processing ... (truncated)
+## Summary of Technical Document: LLM Inference Benchmarking on Consumer Hardware
+
+This technical document outlines a rigorous methodology for benchmarking Large Language Model (LLM) inference on consumer hardware, emphasizing the complexities introduced by resource constraints, varied software backends, and system variability.
+
+### Experimental Design
+
+The core of the experimental design focuses on systematically varying multiple interacting factors to understand the true performance landscape of LLM inference on consumer systems.
+
+* **Separation of Workloads:** The design mandates separating the measurement of **prompt processing throughput** (evaluating the input) from **decoding throughput** (generating the output).
+* **Workload Diversity:** Experiments must utilize diverse workloads (e.g., chat, coding, summarization, batch, agentic) to test different aspects of the model's performance (context handling vs. generation speed).
+* **Configuration as a Tuple:** A benchmark condition is defined as a tuple encompassing all relevant parameters (model file, backend, hardware label, context length, generation limit, prompt file, temperature, GPU layer count, build settings, etc.). Changes to any element of this tuple must be treated as distinct experimental conditions.
+* **Repetition and Error Handling:** Multiple runs (a minimum of three) are essential to account for system variability (thermal throttling, background processes). Failed runs must be recorded as meaningful data points rather than excluded, preventing survivorship bias.
+* **Deterministic Settings:** Prompt and generation settings should be kept deterministic, and prompt content should be versioned (via file paths or hashes) to ensure reproducibility.
+
+### Measurement Methodology
+
+The methodology emphasizes capturing both high-level performance metrics and low-level system telemetry.
+
+* **Primary Metrics:** Key performance indicators include prompt evaluation throughput, decode throughput, time to first token, total generation time, and the number of generated tokens.
+* **Raw Output Preservation:** The framework must preserve the **full stdout/stderr stream** from the inference runtime (e.g., `llama.cpp` output) as the primary source, allowing for manual inspection and ensuring that output formatting changes do not invalidate results.
+* **Resource Monitoring:** Concurrent monitoring of system resources (CPU utilization, RAM usage, GPU power draw, temperature, VRAM usage) using OS interfaces (`/proc`, `nvidia-smi`) is crucial as these factors significantly impact performance.
+* **Metric Interpretation:** The methodology acknowledges that raw resource monitoring data is contextual rather than direct causal explanations. For instance, GPU utilization is a sampled metric, and memory usage includes system caches.
+* **Data Artifact Hierarchy:** A clear hierarchy is established: **Raw Run Files** (primary source) $\rightarrow$ **Metadata Files** (configuration and status) $\rightarrow$ **Processed CSV Output** (derived summary for analysis).
+
+### Limitations and Reproducibility Implications
+
+The document explicitly identifies several threats to validity and outlines necessary steps to ensure reproducibility:
+
+* **Variability Sources:** Performance is highly variable due to:
+    * **System Heterogeneity:** Differences in CPU architecture, core count, memory speed, and power management behavior.
+    * **Thermal/Power Effects:** Thermal throttling and dynamic power/clock scaling on consumer hardware.
+    * **Software Maturity:** Differences in backend kernels, driver versions, and implementation maturity (CPU vs. CUDA vs. Vulkan).
+    * **Quantization Effects:** Throughput improvements are not linear with lower precision, and model quality is affected.
+* **Reproducibility Requirements:** Full reproducibility demands recording the **exact configuration** (model alias, backend, build paths, prompt content, hardware snapshot) in metadata, alongside the raw results.
+* **Limitation Acknowledgment:** The analysis must account for limitations, such as the fact that throughput alone does not measure model quality, and that a single prompt may not capture real-world use.
+* **Metric Caveats:** Researchers must be careful when comparing results across backends, as this compares both hardware and software maturity.
+* **Statistical Reporting:** Overclaiming from only three repetitions is discouraged; median throughput is suggested as a more robust measure than the mean.
+
+### Conclusion
+
+The document advocates for a **transparent, robust, and auditable benchmarking framework**. The primary goal is not to hide variability but to **expose it** in a structured way. This requires separating the measurement of prompt processing and decoding, meticulously recording all environmental and software configurations, preserving raw output artifacts, and treating all experimental results as complex tuples where every parameter change must be accounted for in the analysis.
+
+[ Prompt: 17.8 t/s | Generation: 7.0 t/s ]
+
+
+Exiting...

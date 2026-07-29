@@ -1,0 +1,177 @@
+Input prompt
+
+You are simulating a senior coding-agent design review without external tools, internet access, shell commands, package installation, or file-system inspection. Work only from the specification and artifacts below. Be concrete enough that another engineer could implement and test the design.
+
+Project:
+A research project needs a command-line llama.cpp benchmark runner supporting CPU, CUDA, and Vulkan; model aliases from a configuration file; fixed workload prompts; performance output; hardware metadata; resource monitoring; and one metadata file per run. Raw output must remain available for manual audit. The runner must distinguish a failed model run from missing optional monitoring data.
+
+Existing constraints:
+* Each condition is repeated three times and compared manually using each run's `response.txt`/raw response plus metrics.
+* The default context is 4096, generation limit 256, temperature 0.7, and CPU thread count 1; a workload may override context explicitly.
+* Workloads are `chat`, `batch`, `coding`, `summarization`, `agentic`, and `world_knowledge`.
+* The runner must not mix results if model file, backend, hardware label, context, generation limit, prompt, temperature, GPU layers, build, or driver environment changes.
+* Monitors may be unavailable or sampled sparsely. A model process may fail after creating partial output.
+
+Required deliverables:
+1. Requirements and invariants: list inputs, artifacts, success/failure states, and the experimental identity tuple. Identify at least one ambiguity that must be resolved before implementation.
+2. State-machine workflow: describe the lifecycle from validation through launch, monitoring, process exit, and finalization, including what happens on timeout, OOM, malformed performance output, and monitor failure.
+3. Auditable design: propose shell/Python component boundaries, a metadata schema, atomic-write or partial-file conventions, and how to preserve stdout/stderr and the exact prompt used.
+4. Analysis integrity: explain how to prevent a failed run or variable generated-token count from producing a misleading throughput comparison, and how a parser should treat unknown llama.cpp output formats.
+5. Test plan: provide at least six tests, including one simulated backend failure, one missing monitor, one prompt containing spaces/newlines, one partial output, and one changed prompt hash.
+6. Pre-merge review: name the three highest-risk design flaws in your proposal and the concrete changes that would fix them.
+
+Use these exact headings: Requirements and Invariants; State Machine; Auditable Design; Analysis Integrity; Test Plan; Pre-merge Review. Keep the design implementation-oriented and avoid claiming that a metric is available if the specification does not guarantee it.
+
+Final model response
+
+warning: no usable GPU found, --gpu-layers option will be ignored
+warning: one possible reason is that llama.cpp was compiled without GPU support
+warning: consult docs/build.md for compilation instructions
+
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b10110-8f5ab832c
+model      : /home/dilusha/llm-research/models/Gemma/gemma-4-E2B-it-GGUF/gemma-4-E2B-it-Q4_K_M.gguf
+ftype      : Q4_K - Medium
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> You are simulating a senior coding-agent design review without external tools, internet access, shell commands, package installation, or file-system inspection. Work only from the specification and artifacts below. Be concrete enough that another engineer could implement and test the design.
+
+Project:
+A research project needs a command-line llama.cpp benchmark runner supporting CPU, CUDA, and Vulkan; model aliases from a configuration file; fixed workload prompts; performance output; hardware me ... (truncated)
+## Requirements and Invariants
+
+**Inputs:**
+1. Model alias configuration file (for model selection).
+2. Workload prompt (fixed or overridden).
+3. Hardware/Backend selection (CPU, CUDA, Vulkan).
+4. Configuration parameters (Context, Generation Limit, Temperature, CPU thread count).
+5. Llama.cpp specific parameters (GPU layers, build, driver environment).
+
+**Artifacts:**
+1. Raw output file (`response.txt` or raw stream).
+2. Performance metrics (generated-token count, timing data).
+3. Hardware metadata.
+4. Run-specific metadata file (one per run).
+
+**Success/Failure States:**
+* **Success:** All required outputs (raw data, metrics, metadata) are present, consistent, and verifiable according to the configuration.
+* **Failure (Model):** Llama.cpp execution failed (e.g., OOM, internal error).
+* **Failure (Data):** Missing optional monitoring data (e.g., monitoring unavailable, sparse sampling).
+* **Failure (Inconsistency):** Results from different components do not match (e.g., performance metrics contradict the raw output).
+
+**Experimental Identity Tuple:**
+The unique identifier for a run must be derived from the combination of:
+$$\text{RunID} = \text{Hash}(\text{ModelAlias}, \text{Backend}, \text{HardwareLabel}, \text{Context}, \text{GenLimit}, \text{Temp}, \text{CPUThreads}, \text{Workload}, \text{PromptHash})$$
+
+**Ambiguity Resolution:**
+The specification states: "The runner must distinguish a failed model run from missing optional monitoring data."
+* **Ambiguity:** How is "missing optional monitoring data" defined in the context of distinguishing failure? Does the absence of a metric imply failure, or is it merely a non-fatal condition?
+* **Resolution Proposal:** A run is considered a **Failure** if the core model generation process fails *or* if critical performance metrics are entirely absent *and* the system could not determine the reason for absence (e.g., OOM vs. monitoring failure). The system must prioritize the model's reported exit status.
+
+## State Machine
+
+**States:**
+1. **Initialization & Validation:** Load configuration, validate inputs, generate RunID.
+2. **Pre-flight Check:** Verify necessary environment setup (model loading, backend initialization).
+3. **Execution Launch:** Start the llama.cpp process with defined parameters.
+4. **Monitoring Loop:** Continuously monitor the process and collect performance metrics.
+5. **Process Exit & Capture:** Wait for the process to terminate (success, error, timeout, OOM).
+6. **Post-processing & Validation:** Parse raw output, reconcile metrics, generate final metadata.
+7. **Finalization:** Write all artifacts atomically and mark the run status (Success/Failure).
+
+**Transitions & Error Handling:**
+* **Timeout/OOM:** If the process times out or OOMs, transition to **Process Exit & Capture**, marking the state as **Failure (Resource Error)**. Monitoring stops immediately.
+* **Malformed Performance Output:** If parsing metrics fails, transition to **Post-processing & Validation**, flagging the result as **Failure (Data Corruption)**, retaining raw output for audit.
+* **Monitor Failure:** If monitoring data is unavailable during the loop, transition to **Post-processing & Validation**, flagging the result as **Failure (Incomplete Data)**, but proceeding to output the raw result.
+* **Success Path:** If all checks pass, transition to **Finalization** and mark the run as **Success**.
+
+## Auditable Design
+
+**Component Boundaries:**
+1. **Configuration Loader:** Reads and validates input files.
+2. **Runner Orchestrator (Main Logic):** Manages the state machine flow.
+3. **Llama.cpp Executor:** Manages spawning the external process and capturing standard I/O.
+4. **Monitor Agent:** Periodically polls/reads performance data from the running process or system state.
+5. **Metadata Writer:** Responsible for structuring and writing the final run file.
+
+**Metadata Schema (Per Run):**
+The metadata file must be structured to facilitate the required comparisons and auditability.
+
+| Field | Type | Description | Source |
+| :--- | :--- | :--- | :--- |
+| `RunID` | String | Unique identifier tuple hash. | Orchestrator |
+| `Status` | Enum | SUCCESS, FAILURE (Model), FAILURE (Monitor), FAILURE (Data). | Orchestrator |
+| `ModelAlias` | String | Selected model alias. | Config |
+| `Backend` | String | CPU, CUDA, or Vulkan. | Config |
+| `HardwareLabel` | String | Detected hardware context. | System Query |
+| `Context` | Integer | Actual context used. | Config |
+| `GenerationLimit` | Integer | Actual generation limit. | Config |
+| `Temperature` | Float | Actual temperature used. | Config |
+| `CPUThreads` | Integer | Actual CPU thread count. | Config |
+| `Workload` | String | Workload type. | Config |
+| `PromptUsed` | String | The exact prompt used for the run. | Input |
+| `PromptHash` | String | SHA256 hash of the exact prompt. | Calculated |
+| `RawResponse` | String | The complete, untouched stdout/stderr. | Executor |
+| `PerformanceMetrics` | Object | Contains generated-token count, timing data. | Monitor Agent |
+| `HardwareMetadata` | Object | Detailed hardware information captured. | System Query |
+
+**Atomic-Write/Partial-File Conventions:**
+* **Raw Output Preservation:** The full, unprocessed `stdout`/`stderr` stream from the Llama.cpp Executor **must** be written entirely to the dedicated `RawResponse` field in the metadata file, regardless of success or failure. This fulfills the requirement for manual audit.
+* **Atomic Write:** The final metadata file should be written to a temporary file first. Only upon successful completion of *all* data collection and validation steps should the temporary file be atomically renamed to the final filename. If any step fails, the temporary file is discarded, ensuring no partially written, inconsistent metadata exists.
+
+## Analysis Integrity
+
+**Preventing Misleading Throughput Comparison:**
+Throughput comparison relies on the relationship: $\text{Throughput} = \frac{\text{Generated Tokens}}{\text{Time Taken}}$.
+1. **Token Count Integrity:** The generated-token count must be directly sourced from the Llama.cpp output (or a validated metric stream) and must be explicitly linked to the execution time.
+2. **Contextual Binding:** All metrics (token count, time) must be inextricably bound to the specific configuration parameters ($\text{Context}, \text{GenLimit}, \text{Temp}, \text{PromptHash}$, etc.) that define the execution environment. The $\text{RunID}$ ensures this binding.
+3. **Failure Flagging:** If the process fails (e.g., OOM), the performance metrics must be explicitly flagged as invalid or absent. A comparison algorithm must treat any run missing valid performance metrics as fundamentally incomparable or invalid for throughput benchmarking, rather than assuming zero throughput or extrapolated values.
+
+**Parsing Unknown Llama.cpp Output:**
+The parser must employ a **Strict Schema Validation** approach rather than loose regex matching for performance metrics.
+1. **Expected Format Definition:** Define the expected output structure (e.g., JSON or specific delimited format) for performance metrics.
+2. **Fallback Strategy:** If the output format deviates from the expected schema, the parser must **reject the metrics** and flag the overall run as **Failure (Data Corruption)**. It must *not* attempt to guess values from unstructured text, thus preventing the introduction of false positive comparisons based on hallucinated results.
+
+## Test Plan
+
+1. **Baseline Success Test:** Run a standard configuration (e.g., chat, CPU, default settings). Verify all metrics are present and the output is valid.
+2. **Simulated Backend Failure:** Configure the run to attempt execution on a non-existent or invalid backend (e.g., custom CUDA path). Verify the State Machine transitions to **Failure (Model)** and the RawResponse is captured.
+3. **Missing Monitor Test:** Run a valid model, but configure the monitoring agent to fail or skip sampling entirely for the duration. Verify the State Machine transitions to **Failure (Incomplete Data)**, and the RawResponse is captured.
+4. **Prompt with Special Characters:** Execute a run using a prompt containing multiple spaces and newlines ($\text{Prompt} = \text{"Line 1\nLine 2"}$). Verify the PromptHash and RawResponse accurately reflect the input, ensuring no corruption during I/O.
+5. **Partial Output Test:** Simulate a scenario where the Llama.cpp process terminates abruptly while writing tokens. Verify the system correctly captures the partial output in $\text{RawResponse}$ and correctly flags the run as a failure based on process exit status, regardless of metric completeness.
+6. **Changed Prompt Hash Test:** Execute two identical runs, but intentionally modify a single, non-functional character in the prompt (e.g., change a space to a tab). Verify that the resulting $\text{RunID}$ is different, and the resulting metadata files are distinct, proving the hashing mechanism correctly enforces the "no mixing results" invariant.
+
+## Pre-merge Review
+
+**Highest-Risk Design Flaws and Fixes:**
+
+1. **Risk: Inconsistent State Management leading to Data Corruption (The "Failure" Definition).**
+    * **Flaw:** The ambiguity in defining failure (model error vs. missing monitor data) allows a system to report a successful run with missing critical data, violating the requirement to distinguish failure states accurately.
+    * **Fix:** Strictly enforce that the final `Status` field in the metadata *must* be determined by the Llama.cpp exit code first. If the exit code is non-zero, the status is **FAILURE (Model)**, overriding any monitoring status, unless the monitoring failure itself is the only observed artifact.
+
+2. **Risk: Loss of Auditability due to Atomic Writes (The Raw Output Trap).**
+    * **Flaw:** If the atomic write fails mid-process (e.g., disk full during rename), the system state becomes indeterminate, potentially losing the raw output or creating a corrupted file.
+    * **Fix:** Implement a transactional logging layer *before* the final write. All raw I/O streams must be written to a temporary, uniquely named location. Only after all data is verified and ready are the final artifacts written, and the temporary directory is managed via explicit rollback or cleanup routines.
+
+3. **Risk: Performance Metric Misattribution (The Throughput Trap).**
+    * **Flaw:** If the parser relies solely on the presence of tokens without verifying the time metric, or if the token count is derived from an unvalidated source, throughput comparisons become invalid.
+    * **Fix:** Mandate that the parser requires **both** a valid token count AND a valid execution duration to calculate throughput. If either is missing or flagged as invalid during parsing, the system must default the throughput calculation to an explicitly marked $\text{N/A}$ or $\text{Invalid}$ state in the output, rather than attempting a calculation.

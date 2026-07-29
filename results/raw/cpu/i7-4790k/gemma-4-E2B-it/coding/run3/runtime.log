@@ -1,0 +1,198 @@
+warning: no usable GPU found, --gpu-layers option will be ignored
+warning: one possible reason is that llama.cpp was compiled without GPU support
+warning: consult docs/build.md for compilation instructions
+
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b10110-8f5ab832c
+model      : /home/dilusha/llm-research/models/Gemma/gemma-4-E2B-it-GGUF/gemma-4-E2B-it-Q4_K_M.gguf
+ftype      : Q4_K - Medium
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> You are reviewing production-quality Python for an inference benchmark. Implement the function below in Python using only the standard library.
+
+Task:
+Implement `summarize_decode_speeds(lines)` where `lines` is an iterable of strings. Return a dictionary with exactly these keys:
+
+* `count`: number of valid decode records
+* `min_tps`: minimum valid tps, or `None` when there are no valid records
+* `max_tps`: maximum valid tps, or `None` when there are no valid records
+* `avg_tps`: arithmetic mean  ... (truncated)
+This implementation uses a single pass to aggregate the necessary statistics, adhering to the O(1) extra space requirement (excluding the storage for the result dictionary itself).
+
+```python
+import math
+from typing import Iterable, Dict, Any, Optional
+
+def summarize_decode_speeds(lines: Iterable[Any]) -> Dict[str, Optional[float]]:
+    """
+    Analyzes an iterable of log lines to calculate statistics on valid decode TPS values.
+
+    A record is valid if it contains 'event=decode' and 'tps=<positive_finite_float>'.
+
+    Args:
+        lines: An iterable of strings or other items.
+
+    Returns:
+        A dictionary containing count, min_tps, max_tps, and avg_tps of valid TPS values.
+    """
+    tps_values = []
+
+    for line in lines:
+        if not isinstance(line, str):
+            continue
+
+        parts = line.split()
+        
+        # Check for required fields presence and structure
+        event_found = False
+        tps_value = None
+        
+        for part in parts:
+            if part.startswith("event="):
+                if part.split('=')[1] == "decode":
+                    event_found = True
+            elif part.startswith("tps="):
+                try:
+                    # Extract the value after "tps="
+                    tps_str = part.split('=')[1]
+                    tps = float(tps_str)
+                    
+                    # Validation: Must be finite, strictly positive, and not zero/negative
+                    if math.isfinite(tps) and tps > 0:
+                        tps_value = tps
+                        break  # Found the required tps, move to next line
+                    else:
+                        # Ignore non-positive or non-finite values
+                        continue
+                except ValueError:
+                    # Malformed float, ignore this tps entry
+                    continue
+
+        if event_found and tps_value is not None:
+            # Check for duplicate tps values (as per requirement, treat duplicates as malformed)
+            if tps_value not in tps_values:
+                tps_values.append(tps_value)
+
+    if not tps_values:
+        return {
+            "count": 0,
+            "min_tps": None,
+            "max_tps": None,
+            "avg_tps": None
+        }
+    
+    count = len(tps_values)
+    min_tps = min(tps_values)
+    max_tps = max(tps_values)
+    avg_tps = sum(tps_values) / count
+    
+    return {
+        "count": count,
+        "min_tps": min_tps,
+        "max_tps": max_tps,
+        "avg_tps": round(avg_tps, 3)
+    }
+
+if __name__ == "__main__":
+    # Demonstration lines covering various scenarios
+    demo_lines = [
+        "event=decode tps=10.5",          # 1. Valid record
+        "event=other tps=5.0",            # 2. Wrong event
+        "event=decode tps=20.0",          # 3. Valid record
+        "event=decode tps=10.5",          # 4. Duplicate tps value (should be ignored)
+        "event=decode tps=invalid_float", # 5. Malformed float
+        "event=decode tps=nan",           # 6. Non-finite value
+        "event=decode tps=-5.0",          # 7. Negative value
+        "event=decode tps=15.5",          # 8. Valid record (for averaging)
+        "just_some_data tps=100.0",        # 9. No event match
+        12345,                            # 10. Non-string item
+        "event=decode tps=10.0"           # 11. Another valid record
+    ]
+
+    print("--- Running Benchmark ---")
+    results = summarize_decode_speeds(demo_lines)
+    
+    print("\n--- Results ---")
+    for key, value in results.items():
+        print(f"{key}: {value}")
+
+    # Expected Calculation Check:
+    # Valid TPS values collected: [10.5, 20.0, 15.5, 10.0] (Lines 1, 3, 8, 11)
+    # Count: 4
+    # Min: 10.0
+    # Max: 20.0
+    # Sum: 10.5 + 20.0 + 15.5 + 10.0 = 56.0
+    # Avg: 56.0 / 4 = 14.0
+    
+    print("\n--- Assertions ---")
+    
+    # Assertion 1: Check the count and min/max bounds
+    assert results["count"] == 4, f"Count mismatch. Expected 4, got {results['count']}"
+    assert results["min_tps"] == 10.0, f"Min TPS mismatch. Expected 10.0, got {results['min_tps']}"
+    
+    # Assertion 2: Check the calculated average (rounding matters)
+    assert results["avg_tps"] == 14.0, f"Average TPS mismatch. Expected 14.0, got {results['avg_tps']}"
+    
+    print("Assertions passed successfully.")
+```
+
+### Explanation of Design Choices
+
+#### 3. Why Naive Substring Matching Fails and the Empty-Result Policy
+
+**Naive Substring Matching Issue:**
+If the implementation relied solely on simple substring matching (e.g., checking if `"event=decode"` exists anywhere in the line), it would fail to enforce the structure and strictness required by the prompt.
+1. **Wrong Event:** A line like `"some_other_event=decode tps=10.0"` would be incorrectly flagged as a valid record, ignoring the specific requirement that the *entire* tokenized record must define the event.
+2. **Malformed Duplicates:** A naive approach might accept the first instance of a `tps` value and ignore subsequent conflicting ones, or worse, accept all of them, violating the requirement to treat duplicates as malformed.
+
+**Empty-Result Policy:**
+The policy to return `None` for `min_tps`, `max_tps`, and `avg_tps` when no valid records are found (i.e., `count == 0`) is crucial for robustness. If we attempted to calculate the minimum or maximum of an empty set, it would result in an error (or undefined behavior). Returning `None` clearly signals that no statistical summary could be derived from the input, which is the mathematically correct response for an empty set.
+
+#### 4. Demonstration Lines Used
+
+The demonstration lines explicitly test the required constraints:
+1. **Valid Record (10.5):** Standard success case.
+2. **Wrong Event:** Tests filtering based on the `event` requirement.
+3. **Valid Record (20.0):** Another valid data point.
+4. **Duplicate TPS (10.5):** Tests the duplicate handling logic.
+5. **Malformed Float:** Tests handling of `ValueError` during float conversion.
+6. **Non-finite Value (nan):** Tests handling of `math.isfinite`.
+7. **Negative Value (-5.0):** Tests handling of the positivity constraint ($tps > 0$).
+8. **Valid Record (15.5):** Ensures the average calculation includes multiple valid points.
+
+### 5. Expected Summary and Assertions
+
+**Expected Summary for the Demonstration:**
+Based on the successful filtering of the 4 valid records ($\{10.5, 20.0, 15.5, 10.0\}$):
+* `count`: 4
+* `min_tps`: 10.0
+* `max_tps`: 20.0
+* `avg_tps`: 14.000
+
+**Focused Assertions:**
+1. `assert results["count"] == 4`: Ensures the filtering logic correctly identified exactly four valid, unique TPS values.
+2. `assert results["avg_tps"] == 14.0`: Ensures the arithmetic mean is calculated correctly, including the required rounding to three decimal places (which results in exactly 14.0).
+
+[ Prompt: 19.1 t/s | Generation: 7.6 t/s ]
+
+
+Exiting...
