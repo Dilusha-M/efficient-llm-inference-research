@@ -9,8 +9,11 @@ BASE="$HOME/llm-research"
 # ==========================
 
 BACKEND="cpu"
-HARDWARE="i7-4790k"
-MODEL="GEMMA4_E2B"
+HARDWARE="G3250"
+MODEL="QWEN35_0_8B"
+# Select the llama.cpp CPU build. Override with LLAMA_CPU_BUILD=build-cpu
+# when benchmarking an AVX-capable CPU.
+CPU_BUILD="${LLAMA_CPU_BUILD:-build-cpu-sse42}"
 RUNS=3
 GPU_LAYERS=999
 # CUDA-only MoE CPU offload. Leave empty for ordinary layer offloading.
@@ -53,6 +56,9 @@ do
         --runs "$RUNS"
         --gpu-layers "$GPU_LAYERS"
     )
+    if [ "$BACKEND" = "cpu" ]; then
+        BENCHMARK_ARGS+=(--cpu-build "$CPU_BUILD")
+    fi
     if [ -n "$N_CPU_MOE" ]; then
         BENCHMARK_ARGS+=(--n-cpu-moe "$N_CPU_MOE")
     fi

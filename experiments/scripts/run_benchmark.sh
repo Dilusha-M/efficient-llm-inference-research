@@ -35,6 +35,7 @@ DEFAULT_VULKAN_GPU_LAYERS="${vulkan_gpu_layers:-$DEFAULT_VULKAN_GPU_LAYERS}"
 DEFAULT_THREADS="${threads:-$DEFAULT_THREADS}"
 
 BACKEND=""
+CPU_BUILD="build-cpu"
 HARDWARE=""
 MODEL_ALIAS=""
 WORKLOAD=""
@@ -55,6 +56,7 @@ Usage:
   ./run_benchmark.sh --backend <cpu|cuda|vulkan> --hardware <label> --model <MODEL_ALIAS> --workload <chat|coding|summarization|batch|agentic|world_knowledge> [options]
 
 Options:
+  --cpu-build NAME      CPU build directory under llama.cpp-builds. Default: build-cpu
   --runs N             Number of repeated runs. Default: 3
   --context N          llama.cpp context size. Default: 4096
   --tokens N           Maximum generated tokens; -1 means until EOS or context limit. Default: -1
@@ -90,6 +92,10 @@ while [ "$#" -gt 0 ]; do
     case "$1" in
         --backend)
             BACKEND="${2:-}"
+            shift 2
+            ;;
+        --cpu-build)
+            CPU_BUILD="${2:-}"
             shift 2
             ;;
         --hardware)
@@ -159,7 +165,8 @@ done
 
 case "$BACKEND" in
     cpu)
-        LLAMA="$BASE/llama.cpp-builds/build-cpu/bin/llama-cli"
+        [ -n "$CPU_BUILD" ] || die "--cpu-build must not be empty"
+        LLAMA="$BASE/llama.cpp-builds/$CPU_BUILD/bin/llama-cli"
         CATEGORY="cpu"
         BACKEND_GPU_LAYERS="$DEFAULT_CPU_GPU_LAYERS"
         ;;
@@ -248,6 +255,7 @@ fi
 
 echo "Benchmark configuration"
 echo "  backend:   $BACKEND"
+echo "  cpu build: $CPU_BUILD"
 echo "  hardware:  $HARDWARE"
 echo "  model:     $MODEL_ALIAS ($MODEL_FILE)"
 echo "  workload:  $WORKLOAD"
@@ -363,6 +371,7 @@ while [ "$RUN_INDEX" -le "$RUNS" ]; do
         echo "  \"status\": $(printf '%s' "$STATUS" | json_escape),"
         echo "  \"error_message\": $(printf '%s' "$ERROR_MESSAGE" | json_escape),"
         echo "  \"backend\": $(printf '%s' "$BACKEND" | json_escape),"
+        echo "  \"cpu_build\": $(printf '%s' "$CPU_BUILD" | json_escape),"
         echo "  \"hardware\": $(printf '%s' "$HARDWARE" | json_escape),"
         echo "  \"hardware_category\": $(printf '%s' "$CATEGORY" | json_escape),"
         echo "  \"model_alias\": $(printf '%s' "$MODEL_ALIAS" | json_escape),"
