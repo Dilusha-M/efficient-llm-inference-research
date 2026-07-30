@@ -1,0 +1,7 @@
+Model,Workload,Accuracy,Completeness,Correctness,Usefulness,Overall Score,Notes
+Qwen3.5-0.8B,chat,3,3,3,3,3,Provides basic explanations and follows simple instructions. Limited depth due to small model capability.
+Qwen3.5-0.8B,coding,3,3,3,3,3,"Can generate simple code examples and explanations, but struggles with complex programming tasks."
+Qwen3.5-0.8B,summarization,3,3,3,3,3,Captures main ideas but may miss details and deeper context.
+Qwen3.5-0.8B,batch,3,3,3,3,3,Handles simple multiple requests but consistency reduces with more complex tasks.
+Qwen3.5-0.8B,agentic,3,3,3,3,3,Can follow structured instructions but has limited multi-step planning capability.
+Qwen3.5-0.8B,world_knowledge,3,3,3,3,3,Answers common questions but has limited depth for advanced factual queries.

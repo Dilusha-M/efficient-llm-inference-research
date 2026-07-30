@@ -1,0 +1,25 @@
+Model,Workload,Accuracy,Completeness,Correctness,Usefulness,Overall Score,Notes
+Qwen3.5-0.8B,chat,3,3,3,3,3,"Provides correct basic technical explanations and follows instructions, but reasoning depth is limited."
+Qwen3.5-0.8B,coding,3,3,3,3,3,"Produces simple solutions and explanations, but struggles with complex implementation details."
+Qwen3.5-0.8B,summarization,3,3,3,3,3,Captures main points but lacks deeper understanding and detailed preservation.
+Qwen3.5-0.8B,batch,3,3,3,3,3,"Handles simple multi-task requests, but consistency decreases with complexity."
+Qwen3.5-0.8B,agentic,3,3,3,3,3,Can follow basic planning tasks but limited multi-step reasoning ability.
+Qwen3.5-0.8B,world_knowledge,3,3,3,3,3,Answers common questions but has limited depth for advanced knowledge queries.
+Qwen3.5-2B,chat,4,4,4,4,4,Improved response consistency and reasoning compared with smaller baseline.
+Qwen3.5-2B,coding,4,4,4,4,4,Provides useful code explanations and basic implementations.
+Qwen3.5-2B,summarization,4,4,4,4,4,Produces clearer summaries with improved information retention.
+Qwen3.5-2B,batch,4,4,4,4,4,Handles multiple instructions reasonably well.
+Qwen3.5-2B,agentic,3,4,4,3,4,Can perform structured reasoning but complex planning remains limited.
+Qwen3.5-2B,world_knowledge,4,4,4,4,4,Provides generally useful factual responses.
+Qwen3.5-4B,chat,4,4,4,4,4,Provides coherent and useful responses suitable for lightweight assistants.
+Qwen3.5-4B,coding,4,4,4,4,4,Generates more reliable code-related responses with better reasoning.
+Qwen3.5-4B,summarization,4,4,4,4,4,Maintains important details better than smaller models.
+Qwen3.5-4B,batch,4,4,4,4,4,Handles multiple tasks with good consistency.
+Qwen3.5-4B,agentic,4,4,4,4,4,Shows improved multi-step reasoning but remains below large models.
+Qwen3.5-4B,world_knowledge,4,4,4,4,4,Provides useful answers for general knowledge tasks.
+gemma-4-E2B-it,chat,4,4,4,4,4,Provides coherent conversational responses with good instruction following.
+gemma-4-E2B-it,coding,4,4,4,4,4,Produces useful coding assistance for moderate tasks.
+gemma-4-E2B-it,summarization,4,4,4,4,4,Good at extracting and presenting key information.
+gemma-4-E2B-it,batch,4,4,4,4,4,Maintains reasonable consistency across multiple requests.
+gemma-4-E2B-it,agentic,4,4,4,4,4,Handles structured tasks reasonably well for its size.
+gemma-4-E2B-it,world_knowledge,4,4,4,4,4,Provides generally accurate and useful factual answers.

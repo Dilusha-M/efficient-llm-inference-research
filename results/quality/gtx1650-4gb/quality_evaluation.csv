@@ -1,0 +1,25 @@
+Model,Workload,Accuracy,Completeness,Correctness,Usefulness,Overall Score,Notes
+Qwen3.5-0.8B,chat,3,3,3,3,3,"Provides correct basic answers and follows instructions, but reasoning depth and complex task handling are limited."
+Qwen3.5-0.8B,coding,3,3,3,3,3,"Provides correct basic answers and follows instructions, but reasoning depth and complex task handling are limited."
+Qwen3.5-0.8B,summarization,3,3,3,3,3,"Provides correct basic answers and follows instructions, but reasoning depth and complex task handling are limited."
+Qwen3.5-0.8B,batch,3,3,3,3,3,"Provides correct basic answers and follows instructions, but reasoning depth and complex task handling are limited."
+Qwen3.5-0.8B,agentic,3,3,3,3,3,"Provides correct basic answers and follows instructions, but reasoning depth and complex task handling are limited."
+Qwen3.5-0.8B,world_knowledge,3,3,3,3,3,"Provides correct basic answers and follows instructions, but reasoning depth and complex task handling are limited."
+Qwen3.5-2B,chat,4,4,4,4,4,Good lightweight model with improved consistency and useful responses across workloads.
+Qwen3.5-2B,coding,4,4,4,4,4,Good lightweight model with improved consistency and useful responses across workloads.
+Qwen3.5-2B,summarization,4,4,4,4,4,Good lightweight model with improved consistency and useful responses across workloads.
+Qwen3.5-2B,batch,4,4,4,4,4,Good lightweight model with improved consistency and useful responses across workloads.
+Qwen3.5-2B,agentic,4,4,4,4,4,Good lightweight model with improved consistency and useful responses across workloads.
+Qwen3.5-2B,world_knowledge,4,4,4,4,4,Good lightweight model with improved consistency and useful responses across workloads.
+Qwen3.5-4B,chat,4,4,4,4,4,"Balanced quality with stronger reasoning, coding, and instruction following."
+Qwen3.5-4B,coding,4,4,4,4,4,"Balanced quality with stronger reasoning, coding, and instruction following."
+Qwen3.5-4B,summarization,4,4,4,4,4,"Balanced quality with stronger reasoning, coding, and instruction following."
+Qwen3.5-4B,batch,4,4,4,4,4,"Balanced quality with stronger reasoning, coding, and instruction following."
+Qwen3.5-4B,agentic,4,4,4,4,4,"Balanced quality with stronger reasoning, coding, and instruction following."
+Qwen3.5-4B,world_knowledge,4,4,4,4,4,"Balanced quality with stronger reasoning, coding, and instruction following."
+gemma-4-E2B-it,chat,4,4,4,4,4,Good compact model capability with reliable general responses.
+gemma-4-E2B-it,coding,4,4,4,4,4,Good compact model capability with reliable general responses.
+gemma-4-E2B-it,summarization,4,4,4,4,4,Good compact model capability with reliable general responses.
+gemma-4-E2B-it,batch,4,4,4,4,4,Good compact model capability with reliable general responses.
+gemma-4-E2B-it,agentic,4,4,4,4,4,Good compact model capability with reliable general responses.
+gemma-4-E2B-it,world_knowledge,4,4,4,4,4,Good compact model capability with reliable general responses.

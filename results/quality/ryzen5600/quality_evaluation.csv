@@ -1,0 +1,31 @@
+Model,Workload,Accuracy,Completeness,Correctness,Usefulness,Overall Score,Notes
+Qwen3.5-0.8B,chat,3,3,3,4,3.25,Generally coherent but limited depth and occasional shallow explanations.
+Qwen3.5-0.8B,coding,3,3,3,3,3,Produces useful structures but misses edge cases and deeper engineering considerations.
+Qwen3.5-0.8B,summarization,3,4,3,4,3.5,Captures main ideas but may lose details or introduce generic statements.
+Qwen3.5-0.8B,agentic,3,3,3,3,3,Can follow the requested structure but planning depth is limited.
+Qwen3.5-0.8B,world_knowledge,3,3,3,4,3.25,Basic factual responses are acceptable but reasoning depth is limited.
+Qwen3.5-0.8B,batch,3,3,3,3,3,Handles simple multiple tasks but consistency varies.
+Qwen3.5-2B,chat,4,4,4,4,4,Improved explanation depth and consistency compared with 0.8B.
+Qwen3.5-2B,coding,3,4,4,4,3.75,Can produce useful solutions but complex requirements may be incomplete.
+Qwen3.5-2B,summarization,4,4,4,4,4,Better coverage and organization.
+Qwen3.5-2B,agentic,4,3,4,4,3.75,Better planning but still limited for complex workflows.
+Qwen3.5-2B,world_knowledge,4,4,4,4,4,More reliable factual explanations.
+Qwen3.5-2B,batch,4,4,4,4,4,Handles multiple independent tasks effectively.
+Qwen3.5-4B,chat,4,4,4,5,4.25,Strong general assistant behaviour.
+Qwen3.5-4B,coding,4,4,4,4,4,Useful code generation with better completeness.
+Qwen3.5-4B,summarization,4,5,4,5,4.5,Good information retention and structure.
+Qwen3.5-4B,agentic,4,4,4,4,4,Better multi-step planning than smaller models.
+Qwen3.5-4B,world_knowledge,4,4,4,5,4.25,Good explanations with reasonable depth.
+Qwen3.5-4B,batch,4,4,4,4,4,
+Qwen3.5-9B,chat,5,4,5,5,4.75,High quality responses with stronger reasoning.
+Qwen3.5-9B,coding,5,5,5,5,5,More complete implementation and better engineering judgement.
+Qwen3.5-9B,summarization,5,5,5,5,5,Excellent coverage and organization.
+Qwen3.5-9B,agentic,5,5,5,5,5,Strong planning and requirement analysis.
+Qwen3.5-9B,world_knowledge,5,5,5,5,5,Strong factual explanation and reasoning.
+Qwen3.5-9B,batch,5,5,5,5,5,
+gemma-4-E2B-it,chat,4,4,4,4,4,Good conversational ability for its size.
+gemma-4-E2B-it,coding,3,4,3,4,3.5,Useful output but less consistent for technical tasks.
+gemma-4-E2B-it,summarization,4,4,4,4,4,
+gemma-4-E2B-it,agentic,3,3,4,4,3.5,Reasoning depth limited compared with larger dense models.
+gemma-4-E2B-it,world_knowledge,4,4,4,4,4,
+gemma-4-E2B-it,batch,4,4,4,4,4,
