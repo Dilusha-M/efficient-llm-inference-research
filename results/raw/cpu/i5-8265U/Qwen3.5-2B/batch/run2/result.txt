@@ -1,0 +1,189 @@
+Input prompt
+
+Answer the following independent benchmark-review tasks. Keep answers clearly separated. Be explicit about assumptions, distinguish measured facts from hypotheses, and call out any case where the requested conclusion cannot be determined from the supplied data.
+
+Task 1 — quantization tradeoff:
+An 8B model has a 8.0 GB Q8_0 file and a 4.8 GB Q4_K_M file. A 6 GB GPU has 5.2 GB free before inference. Explain which memory pressure each format creates, why file size is not a complete runtime-memory estimate, and give two quality/performance measurements needed before declaring one format better. Do not claim that Q4 is always faster.
+
+Task 2 — conservative launch decision:
+A machine has 16 GB RAM, a 6 GB GPU, a 2,000-token prompt, and a 512-token generation limit. The model weights occupy 5.0 GB in the chosen quantization. Describe a conservative procedure for choosing context size and GPU layer offload in llama.cpp. Include what should be tried first, what telemetry should be recorded, and what would count as an unsafe or misleading success. Do not assume the 5.0 GB weight figure includes the KV cache.
+
+Task 3 — robust aggregation:
+Three runs report decode speeds of 42.0, 41.5, and 8.0 tok/s; the last run logged an out-of-memory warning. Write short, language-agnostic pseudocode that validates records, keeps the failed run visible, and computes the median for successful runs without silently treating the failure as zero. State how you would report the result if fewer than two runs succeed.
+
+Task 4 — validity audit:
+Identify four threats to validity in a CPU/CUDA/Vulkan comparison where the CPU uses 8 threads, CUDA offloads all layers, Vulkan offloads all layers, and each backend is run three times. For each threat, give a concrete control or disclosure. At least one threat must concern workload/output comparability, not just hardware or software.
+
+Task 5 — user-visible latency:
+For a 2,000-token prompt and 200 generated tokens, explain the difference between time to first token, prompt-evaluation throughput, decode throughput, and total wall-clock time. Give a symbolic equation for total time and one example where optimizing prompt processing barely changes the user's experience. Do not equate tok/s with latency without specifying which phase it describes.
+
+Final model response
+
+warning: no usable GPU found, --gpu-layers option will be ignored
+warning: one possible reason is that llama.cpp was compiled without GPU support
+warning: consult docs/build.md for compilation instructions
+
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b10110-8f5ab832c
+model      : /home/dilusha/llm-research/models/Qwen/Qwen3.5-2B-GGUF/Qwen3.5-2B-Q4_K_M.gguf
+ftype      : Q4_K - Medium
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> Answer the following independent benchmark-review tasks. Keep answers clearly separated. Be explicit about assumptions, distinguish measured facts from hypotheses, and call out any case where the requested conclusion cannot be determined from the supplied data.
+
+Task 1 — quantization tradeoff:
+An 8B model has a 8.0 GB Q8_0 file and a 4.8 GB Q4_K_M file. A 6 GB GPU has 5.2 GB free before inference. Explain which memory pressure each format creates, why file size is not a complete runtime-memory ... (truncated)
+Here are the answers to the benchmark-review tasks, structured explicitly by section and adhering to the constraints of distinguishing facts from hypotheses and calling out data limitations.
+
+### Task 1 — quantization tradeoff
+
+**Memory Pressure Analysis**
+*   **Q8_0 (8.0 GB file):** On a 6 GB GPU with 5.2 GB free, this model would **exceed available memory** by 2.8 GB (8.0 GB - 5.2 GB). This creates severe runtime pressure, likely causing the kernel to swap to disk, which drastically degrades inference speed and accuracy.
+*   **Q4_K_M (4.8 GB file):** This model fits comfortably within the 5.2 GB free (4.8 GB < 5.2 GB). It creates negligible immediate pressure on the 6 GB device, allowing for the full model + KV cache to reside in RAM without swapping.
+
+**Why file size is not a complete runtime-memory estimate**
+The provided file sizes ($8.0 \text{ GB}$ and $4.8 \text{ GB}$) represent the raw binary size of the compressed model weights. Runtime memory usage is calculated by summing the weights with overheads:
+1.  **KV Cache:** For a transformer, the KV cache size is often significantly larger than the weights. For an 8B model, the KV cache might be 1.5x to 2.0x the weight size.
+2.  **Activation/Gradient Storage:** Intermediate activations and gradients often require extra RAM.
+3.  **System Overhead:** OS, library, and runtime buffers (e.g., `torch` or `llama.cpp` buffers) add to the peak memory requirement.
+Therefore, the $4.8 \text{ GB}$ Q4 file might appear safe, yet the *actual* peak memory could exceed $6 \text{ GB}$ due to the massive KV cache, whereas the $8.0 \text{ GB}$ model might run smoothly if the KV cache is small enough for the 8B model (which is rare for 8B) or if the file is significantly compressed in a way that doesn't reflect the runtime state.
+
+**Two quality/performance measurements needed**
+To declare one format better, you must measure:
+1.  **Per-token Latency (TTB - Time to Byte):** Measured in milliseconds. This isolates the computational bottleneck.
+2.  **Per-token Throughput (TTP - Tokens per Second):** Measured in tokens/s. This isolates the memory bandwidth bottleneck.
+*Hypothesis Note:* Without these measurements, one cannot claim Q4 is faster than Q8 because Q8 might benefit from higher precision (faster computation) while Q4 suffers from lower memory bandwidth.
+
+---
+
+### Task 2 — conservative launch decision
+
+**Conservative Procedure for Llama.cpp**
+Given 16 GB RAM and 5.0 GB of weights, the following steps should be taken:
+1.  **Attempt with Context:** Set `ctx_size` to the maximum supported by the hardware (likely 2048 or 4096 tokens), assuming the 5.0 GB weight figure does not include the full KV cache. Run the model. If OOM (Out of Memory) occurs, reduce `ctx_size` (e.g., to 512 or 1024) and retry.
+2.  **Record Telemetry:** Log the following metrics for every run:
+    *   `device_type` (CPU/CUDA)
+    *   `gpu_layer_offloads` (e.g., "offloaded_layers: 128, 256, 512")
+    *   `inference_duration_ms`
+    *   `peak_memory_usage_gb`
+    *   `tokens_per_second`
+3.  **Define Unsafe/Misleading Success:**
+    *   An "unsafe" success is a run where the model runs but `peak_memory_usage_gb` > 16 GB (over-committing the system) or the `inference_duration_ms` is significantly higher than the baseline without a clear reason, suggesting the kernel is failing to utilize the GPU effectively.
+    *   A "misleading" success is a run where `tokens_per_second` looks high, but a subsequent run with the same context size but lower context length shows a sharp drop in TTP, indicating the model is stuck in the KV cache calculation phase rather than the attention phase.
+
+---
+
+### Task 3 — robust aggregation
+
+**Pseudocode for Median Calculation with Failure Visibility**
+
+```python
+def robust_aggregate_decoding_speeds(records):
+    # records is a list of dictionaries: {run_id, speed_toks_per_sec, status, error_message}
+    
+    # 1. Validate records: Check for missing required fields and valid status
+    valid_records = []
+    failed_records = []
+    
+    for record in records:
+        if not record.get('status') == 'success':
+            failed_records.append(record)
+            continue
+            
+        if not record.get('speed') is not None:
+            print(f"Skipping run {record['run_id']}: Invalid speed value")
+            continue
+            
+        valid_records.append(record)
+        
+    # 2. Keep the failed run visible
+    if failed_records:
+        print(f"Failed run visible: {failed_records[0].get('run_id')}")
+        print(f"Failure details: {failed_records[0].get('error_message')}")
+
+    # 3. Compute median for successful runs
+    if len(valid_records) == 0:
+        raise ValueError("No successful runs found.")
+    
+    # Sort speeds numerically
+    valid_records_sorted = sorted(valid_records, key=lambda x: x['speed'])
+    
+    # Calculate median
+    if len(valid_records_sorted) % 2 == 1:
+        median_speed = valid_records_sorted[len(valid_records_sorted) // 2]['speed']
+    else:
+        mid = len(valid_records_sorted) // 2
+        median_speed = (valid_records_sorted[mid-1]['speed'] + valid_records_sorted[mid]['speed']) / 2.0
+    
+    return {
+        'median_speed': median_speed,
+        'success_count': len(valid_records),
+        'failed_count': len(failed_records)
+    }
+```
+
+**Reporting if fewer than two runs succeed**
+If fewer than two runs succeed (i.e., only one or zero runs are valid), the result should be reported with a clear warning indicating the lack of statistical significance. Instead of computing a median, report the **mean** of the successful runs as the "best case" estimate, or report the **minimum** speed among successful runs if the goal is to be conservative about performance.
+
+*Example Report:*
+> "Only 1 out of 3 runs succeeded. Median speed: N/A. Best Case Estimate: 41.5 tok/s. Note: No convergence observed from the failed run."
+
+---
+
+### Task 4 — validity audit
+
+**Four Threats to Validity with Controls**
+
+1.  **Threat: Cross-Backend Variability (Hardware/Software).**
+    *   *Threat:* Results may differ between a CPU running on a specific CPU architecture (e.g., x86_64) and a GPU running on a GPU architecture (e.g., NVIDIA Ampere or Hopper), even if the software is identical.
+    *   *Control:* Run the comparison on a "dual-head" workstation (one CPU, one GPU) or a single head with both integrated GPU and dedicated GPU to normalize hardware architecture differences.
+2.  **Threat: CUDA Memory Bandwidth Bottleneck.**
+    *   *Threat:* The GPU's memory bandwidth (GB/s), not compute power, becomes the bottleneck. A Vulkan backend might be slower than a CUDA backend simply because Vulkan has lower memory transfer speeds.
+    *   *Control:* Explicitly measure and report `memory_bandwidth_bw` (e.g., GB/s) alongside `compute_utilization`. If one backend is consistently slower due to bandwidth while the other is slower due to compute, the slower backend is not necessarily "worse."
+3.  **Threat: Workload/Output Comparability.**
+    *   *Threat:* The two backends might process the exact same prompt differently (e.g., different tokenization strategies, different attention heads selected, or different decoding schedules), leading to non-equivalent outputs.
+    *   *Control:* Perform a **round-trip verification** (or "echo" test). Run the model twice using the *same* prompt, save the output of Run A, and compare it byte-for-byte (or token-by-token) to the output of Run B. If they differ, the comparison is invalid due to non-comparable outputs.
+4.  **Threat: Workload/Output Comparability (Seed/Randomization).**
+    *   *Threat:* If the backends use random number generators (RNG) for tie-breaking or token selection, a seed difference might cause the backends to select different tokens for the same input, making the outputs non-comparable.
+    *   *Control:* Use deterministic RNG seeds (e.g., `std::mt19937` with fixed seeds) or explicitly seed the random state for both backends to ensure identical randomization behavior.
+
+---
+
+### Task 5 — User-visible latency
+
+**Definitions and Distinction**
+*   **Time to First Token (TTFT):** The latency from the start of the prompt evaluation until the generation of the first token. This is the time the user sees the first character.
+*   **Prompt-Evaluation Throughput (P-E TTP):** The number of tokens processed per second by the model during the initial pass. This measures how many tokens were consumed to generate the output.
+*   **Decode Throughput (D-TTP):** The number of tokens *outputted* per second by the model. This measures the generation speed (tokens/s).
+*   **Total Wall-Clock Time:** The total elapsed time from prompt input to completion.
+
+**Symbolic Equation**
+Let $T_{TTFT}$ be the time to first token.
+Let $T_{eval}$ be the time spent evaluating the prompt (e.g., parsing, embedding).
+Let $T_{gen}$ be the time spent generating tokens.
+
+$$ T_{wall-clock} = T_{TTFT} + T_{eval} + T_{gen} $$
+
+**Example where optimizing prompt processing barely changes the experience**
+Optimizing prompt processing (e.g., reducing $T_{eval}$) has little impact on the user experience if $T_{TTFT}$ is the dominant factor.
+*   *Scenario:* If the user has a long, complex system prompt that takes 50ms to parse, reducing the time to evaluate the prompt from 50ms to 30ms changes the total time by only 25% but makes no difference to the user. The user still sees the first token after the same amount of time relative to their perception threshold.
+*   *Better Example:* If $T_{TTFT}$ is 200ms and $T_{eval}$ is 10ms, then reducing $T_{eval}$ from 10ms to 5ms reduces the total time by 0.5ms, which is negligible for a user waiting for the first token. In this case, optimizing the prompt is less valuable than optimizing the KV cache or model quantization, which would reduce $T_{TTFT}$ significantly.

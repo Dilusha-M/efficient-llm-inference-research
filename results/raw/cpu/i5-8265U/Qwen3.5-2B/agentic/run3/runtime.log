@@ -1,0 +1,222 @@
+warning: no usable GPU found, --gpu-layers option will be ignored
+warning: one possible reason is that llama.cpp was compiled without GPU support
+warning: consult docs/build.md for compilation instructions
+
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b10110-8f5ab832c
+model      : /home/dilusha/llm-research/models/Qwen/Qwen3.5-2B-GGUF/Qwen3.5-2B-Q4_K_M.gguf
+ftype      : Q4_K - Medium
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> You are simulating a senior coding-agent design review without external tools, internet access, shell commands, package installation, or file-system inspection. Work only from the specification and artifacts below. Be concrete enough that another engineer could implement and test the design.
+
+Project:
+A research project needs a command-line llama.cpp benchmark runner supporting CPU, CUDA, and Vulkan; model aliases from a configuration file; fixed workload prompts; performance output; hardware me ... (truncated)
+# Project: Llama.cpp Benchmark Runner Design Specification
+
+## 1. Requirements and Invariants
+
+**Inputs:**
+*   **Configuration File (`benchmark-config.json` or similar):** Defines the run identity including `model_alias`, `backend`, `hardware_label`, `context_size`, `max_gen_len`, `temperature`, `cpu_threads`, and a list of workload names.
+*   **Prompt Template:** A fixed template string provided in the config, allowing for an optional override via the `--prompt` flag.
+*   **Hardware Metadata:** Pre-cached or runtime-detected CPU/GPU capabilities (latency, core count, memory bandwidth).
+
+**Artifacts:**
+*   **Raw Output:** A file named `raw_response.txt` containing the exact stdout/stderr stream from the benchmark process *before* any filtering or aggregation. This is the single source of truth for manual auditing.
+*   **Metrics File:** A JSON file named `metrics.json` containing aggregated performance data (throughput, latency, utilization) *only* if monitoring was successfully sampled.
+*   **Run Status File:** A status file named `run_status.json` indicating the final state: `success`, `failed`, or `warning`.
+
+**Experimental Identity Tuple:**
+A tuple containing:
+*   `model_alias`: String from config.
+*   `backend`: String (e.g., `llama.cpp`, `vllm`).
+*   `hardware_label`: String (e.g., `cpu-only`, `cuda-gpu`).
+*   `context_size`: Integer.
+*   `max_gen_len`: Integer.
+*   `temperature`: Float.
+*   `cpu_threads`: Integer.
+*   `prompt_hash`: (Calculated hash of the final prompt string).
+*   *Ambiguity to Resolve:* How to handle `context_size` changes (e.g., via `--context`) without re-reading the config file for the identity tuple, ensuring the tuple remains consistent across runs that share a model but differ in context size.
+
+**Success/Failure States:**
+*   **Success:** `run_status.json` = `success`. Metrics are present in `metrics.json`. `raw_response.txt` exists.
+*   **Failure:** `run_status.json` = `failed`. Metrics are absent from `metrics.json`. `raw_response.txt` is generated but metrics are not.
+*   **Warning:** `run_status.json` = `warning`. Metrics are present but contain anomalies (e.g., high latency).
+
+**Invariants:**
+1.  **Non-mixing:** If any configuration attribute (model, backend, hardware, context, gen limit, prompt, temperature, GPU layers, build, driver) changes between runs, the resulting `run_status.json` *must* differ.
+2.  **No Spurious Metrics:** A `run_status.json` with `success` must contain valid metrics; a `run_status.json` with `failed` must *not* contain metrics.
+3.  **Raw Output Preservation:** The file `raw_response.txt` must always exist, regardless of success/failure status.
+4.  **Deterministic Identity:** The experimental identity tuple must be reproducible given the inputs, allowing for exact comparison of runs.
+
+---
+
+## 2. State-Machine Workflow
+
+The lifecycle is modeled as a state machine where transitions are driven by configuration inputs or runtime events.
+
+1.  **Initialization (`VALIDATE`):**
+    *   Read `benchmark-config.json`.
+    *   Parse `model_alias` and `backend`.
+    *   Detect hardware label (`cpu-only` vs `cuda-gpu`).
+    *   Set defaults: context=4096, gen_limit=256, temp=0.7, threads=1.
+    *   *Failure Path:* If config is missing, parse fails, `run_status.json` becomes `failed` immediately, and `raw_response.txt` is not created.
+
+2.  **Launch (`LAUNCH_WORKLOAD`):**
+    *   Execute the selected workload command (e.g., `llama.cpp run --model <alias> ...`).
+    *   **Timeout Check:** If the process exits before `max_gen_len` tokens are generated, terminate early.
+        *   *Failure Path:* If the process crashes without writing to `raw_response.txt`, the run is `failed`. If it exits normally but fails to write output, treat as `warning` unless the file is empty.
+
+3.  **Monitoring (`SAMPLE_MONITOR`):**
+    *   **Condition:** Only if `run_status.json` is `success` *and* the workload supports monitoring (e.g., `chat`, `summarization`).
+    *   **Action:** Poll metrics (tokens/sec, p99 latency) periodically.
+    *   **Failure Path:** If the monitor process crashes or hangs, log a warning to `run_status.json`. If the workload itself is monitoring, the metrics file is created but may contain incomplete data.
+
+4.  **Exit (`TERMINATE`):**
+    *   **Normal Exit:** Process terminates cleanly.
+        *   If `raw_response.txt` has content: `run_status.json` = `success`.
+        *   If `raw_response.txt` is empty: `run_status.json` = `warning` (unless explicitly specified).
+    *   **OOM (Out of Memory):** Process killed by OS.
+        *   `run_status.json` = `failed`. `raw_response.txt` exists (possibly empty or truncated). Metrics are absent.
+    *   **Malformed Output:** Process writes garbage or non-text to stdout.
+        *   The parser must strip non-text characters from `raw_response.txt`.
+        *   `run_status.json` = `failed` (strict parsing failure).
+
+5.  **Finalization (`FINALIZE`):**
+    *   Generate the `run_id` hash based on the final state of the config and prompt.
+    *   Write `run_status.json` and `metrics.json` to disk.
+    *   Ensure `raw_response.txt` is readable and uncorrupted.
+
+---
+
+## 3. Auditable Design
+
+**Component Boundaries:**
+*   **Shell Layer (`bash/run_runner.sh`):**
+    *   *Responsibility:* Argument parsing, config loading, calling the benchmark binary (e.g., `./run.sh --model ...`), and simple timeout handling.
+    *   *Output:* None (it pipes everything to the next layer).
+*   **Python Layer (`benchmark_runner.py`):**
+    *   *Responsibility:* State machine logic, file I/O, metadata generation, and parsing the raw output.
+    *   *Output:* Writes to disk and returns `0` on success, non-zero on failure.
+
+**Metadata Schema:**
+```json
+{
+  "model_alias": "mistralai/Mixtral-8x7B",
+  "backend": "llama.cpp",
+  "hardware_label": "cpu-only",
+  "context_size": 4096,
+  "max_gen_len": 256,
+  "temperature": 0.7,
+  "cpu_threads": 1,
+  "prompt": "User: Hello\n\nAssistant: Hello!",
+  "run_id": "sha256...12345678",
+  "status": "success",
+  "metrics": {
+    "tokens_per_second": 12500,
+    "latency_ms": 45.2
+  }
+}
+```
+
+**Atomic-Write / Partial-File Conventions:**
+*   **`raw_response.txt`:** Written atomically using `f.write()` on a temporary file, then `os.rename()` to the final destination. This ensures the file either contains the exact stream or is missing entirely, preventing "half-written" files in `run_status.json`.
+*   **`metrics.json`:** Only written if `run_status.json` is `success` and the monitor reported valid data. If the run fails, this file is strictly omitted from disk.
+
+**Preserving Stdout/Stderr:**
+*   **Method:** The benchmark runner must capture `PIPE` from `ps1` (process 1) and `PIPE2` from `ps2` (process 2) in the shell script before passing them to the Python layer.
+*   **Prompt Preservation:** The prompt string must be captured in a file named `prompt_used.txt` alongside `raw_response.txt` if the benchmark writes to a separate file for the prompt. This ensures the exact prompt is available for audit even if the benchmark output is redirected to a different location.
+
+---
+
+## 4. Analysis Integrity
+
+**Preventing Misleading Throughput Comparisons:**
+*   **Failure Handling:** A failed run (`run_status.json` = `failed`) must *not* produce metrics in the output file. The presence of metrics in a `failed` run is a data integrity violation. The specification strictly dictates metrics are only included if the run is successful.
+*   **Garbage Detection:** The `raw_response.txt` parser must implement a strict mode. If the file contains binary data, null bytes, or non-standard tokens, the parser must report `run_status.json` = `failed` rather than attempting to aggregate metrics from a corrupted stream. This prevents a "clean" output from a broken model from being interpreted as a successful benchmark.
+
+**Handling Unknown Formats:**
+*   **Parser Strategy:** The parser must read `raw_response.txt` as a raw stream. It should attempt to parse standard JSON/LLaMA format tokens.
+*   **Unknown Format:** If the benchmark outputs a format the parser does not recognize (e.g., a proprietary marker or a non-TensorFlow token), the parser must:
+    1.  Log the raw bytes of the unknown output to `raw_response.txt`.
+    2.  Do not attempt to extract counts from the unknown tokens.
+    3.  Set `run_status.json` = `failed` with a specific reason code (e.g., `PARSE_ERROR`).
+*   **Rationale:** Relying on metrics derived from unknown output leads to false positives. A run with "unknown" output should never be scored as successful because the metrics are untrusted.
+
+---
+
+## 5. Test Plan
+
+The following six tests validate the design invariants and error handling.
+
+1.  **Validated Run:**
+    *   *Setup:* Config with standard parameters.
+    *   *Action:* Run `llama.cpp run` successfully.
+    *   *Check:* Verify `run_status.json` is `success`, `metrics.json` exists, and `raw_response.txt` contains valid text.
+
+2.  **Failed Model File (Simulated):**
+    *   *Setup:* Modify config to point to a non-existent file.
+    *   *Action:* Run the benchmark.
+    *   *Check:* Verify `run_status.json` is `failed`, `metrics.json` is absent, and `raw_response.txt` is generated but empty or contains only error strings.
+
+3.  **Missing Monitor Scenario:**
+    *   *Setup:* Configure a workload that supports monitoring (e.g., `summarization`).
+    *   *Action:* Run the benchmark without an active GPU monitor (simulated by killing the monitor process early).
+    *   *Check:* Verify `run_status.json` is `success` (or `warning`), but `metrics.json` is omitted from disk, even though the run succeeded.
+
+4.  **Prompt with Spaces/Newlines:**
+    *   *Setup:* Construct a prompt string with leading/trailing whitespace and newlines.
+    *   *Action:* Ensure the `--prompt` flag captures this string correctly.
+    *   *Check:* Verify that the `prompt_used.txt` file matches the input string exactly, including whitespace, allowing for an audit of the prompt composition.
+
+5.  **Partial Output (OOM/Switch):**
+    *   *Setup:* Create a workload that writes partial output before hitting the generation limit.
+    *   *Action:* Configure the benchmark to allow early exit.
+    *   *Check:* Verify that if the process crashes mid-write, `run_status.json` reflects the crash state rather than a successful completion with truncated metrics.
+
+6.  **Changed Prompt Hash:**
+    *   *Setup:* Run the benchmark twice.
+    *   *Action:* Change the `--prompt` flag between the two runs.
+    *   *Check:* Verify that the `run_id` hash in `run_status.json` differs between the two runs, proving the identity tuple is sensitive to prompt changes as required.
+
+---
+
+## 6. Pre-merge Review: High-Risk Flaws
+
+To prevent future issues, the following three design flaws must be addressed before merging:
+
+**Flaw 1: Conflation of Runtime Environment Changes in Identity.**
+*   *Risk:* If the benchmark runner uses the `--model` flag to start a new process, it might inherit the configuration file's default values (context, temp, threads) which differ from the config file's explicit values. If the runtime environment (CUDA driver version, specific GPU driver) changes between runs but the model is the same, the identity tuple changes. If the runner ignores the config file's specific `context_size` setting and defaults to 4096, the "identity" becomes inconsistent.
+*   *Fix:* Implement a dedicated "Run Identity" block in the config that explicitly overrides the defaults (e.g., `context_size: 1024`) or use a run-time flag mechanism (`--run-identity-context`) that is read by the runner to reconstruct the tuple without relying on the config file's static defaults.
+
+**Flaw 2: Ambiguity on "Success" Definition when Monitoring is Missing.**
+*   *Risk:* If a model process fails after creating partial output (OOM, crash), the runner should report `failed`. However, if the benchmark tool (e.g., `llama.cpp`) writes to a file named `benchmark_output.txt` instead of `raw_response.txt`, the runner might incorrectly read that file as the audit source, leading to a `success` status for a failed run.
+*   *Fix:* Enforce a strict file path mapping. The runner *must* write to `raw_response.txt` regardless of whether monitoring is present. If `raw_response.txt` is present and non-empty, the status *must* be `success`. If the benchmark writes elsewhere, the runner must be configured to copy that output to `raw_response.txt` before the final status check, ensuring the audit file is always the canonical source of truth.
+
+**Flaw 3: Incomplete Parsing of Non-TensorFlow Output.**
+*   *Risk:* If the benchmark outputs tokens in a format the Python parser does not recognize (e.g., specific model-specific tokenizers or a different delimiter), the parser might fail to count tokens correctly, leading to misleading throughput (e.g., counting garbage as tokens).
+*   *Fix:* Implement a "Safe Mode" parser that, instead of attempting to parse tokens into a standard format, simply counts the number of non-empty lines in `raw_response.txt`. This makes the runner robust against model-specific formatting variations while still adhering to the requirement to preserve raw output.
+
+[ Prompt: 17.9 t/s | Generation: 6.3 t/s ]
+
+
+Exiting...

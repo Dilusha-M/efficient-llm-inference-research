@@ -1,0 +1,74 @@
+warning: no usable GPU found, --gpu-layers option will be ignored
+warning: one possible reason is that llama.cpp was compiled without GPU support
+warning: consult docs/build.md for compilation instructions
+
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b10110-8f5ab832c
+model      : /home/dilusha/llm-research/models/Qwen/Qwen3.5-2B-GGUF/Qwen3.5-2B-Q4_K_M.gguf
+ftype      : Q4_K - Medium
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> Summarize the following technical document. Focus on the experimental design, measurement methodology, limitations, and reproducibility implications.
+
+Technical document:
+
+Large language model inference on consumer hardware is constrained by a combination of memory capacity, memory bandwidth, compute throughput, software backend maturity, and workload shape. Unlike training, inference is often dominated by repeated matrix-vector operations during autoregressive decoding. During prompt processing ... (truncated)
+Here is a summary of the provided technical document, structured by the requested categories:
+
+### 1. Experimental Design
+The document advocates for a **highly granular and controlled experimental framework** designed to isolate hardware and software variables rather than conflating them into a single "throughput" number.
+*   **Workload Segmentation:** Experiments must separate distinct inference patterns (chat, coding, summarization, batch, agentic) to avoid genericizing results. Fixed prompts are critical because changes in length or content alter tokenization and generation behavior.
+*   **Deterministic vs. Interactive:** Researchers must explicitly choose between measuring *maximum achievable throughput* (via controlled thermal/power settings) or *realistic interactive performance* (using normal desktop settings with recorded load).
+*   **Context Sensitivity:** Workloads like summarization or batches that require long context or multiple independent tasks should be used to stress the Key-Value (KV) cache and prompt processing paths.
+*   **Configuration Integrity:** Every run must be treated as a unique tuple containing the model alias, backend, hardware, context length, generation limits, temperature, and specific build/driver environment. Changes in any tuple invalidate previous results.
+
+### 2. Measurement Methodology
+The protocol emphasizes **separation of concerns** to accurately measure distinct bottlenecks inherent to consumer hardware:
+*   **Split Metrics:** Prompt evaluation throughput and decode throughput must be measured separately because the model performs parallel matrix-matrix operations for prompts (hardware-heavy) and sequential token generation for decoding (memory-intensive).
+*   **Resource Monitoring:**
+    *   **Hardware:** `nvidia-smi` (GPU), `/proc/stat`/`uptime` (CPU/RAM), and system sensors.
+    *   **Environment:** Recording binary versions, driver versions, and runtime parameters is non-negotiable.
+*   **Timing Granularity:**
+    *   **Prompt/Decode Times:** Extracted strictly from `llama.cpp` performance output flags (e.g., `prompt_eval_time`, `decode_eval_time`).
+    *   **TTFB (Time to First Token):** Recorded as null if unavailable from the model runtime, rather than estimating or inventing a value.
+    *   **Wall-Clock Time:** Measured externally around command invocation to capture total duration.
+*   **Raw Data Preservation:** The runner must capture full `stdout` and `stderr` streams. While processed CSVs are useful for analysis, they must be regenerated from raw run directories whenever parser logic changes, ensuring the raw file remains the primary source of truth.
+
+### 3. Limitations and Constraints
+The document highlights inherent risks and limitations of benchmarking consumer hardware:
+*   **Hardware Variability:** Consumer GPUs suffer from VRAM constraints causing cache spilling and paging, while CPUs are sensitive to core counts, clock speeds, and vector instruction support.
+*   **Thermal/Power Dynamics:** Thermal throttling, power management, and GPU boost behaviors directly impact performance, making reproducibility dependent on stable environmental conditions.
+*   **Model Quality vs. Throughput:** Lower precision quantization (e.g., Q4) trades memory for reduced VRAM pressure but may alter kernel behavior and output quality.
+*   **Survivorship Bias:** Failure modes (e.g., model loading failures due to insufficient VRAM) are valid data points but must be recorded to avoid hiding the reality of resource-constrained hardware.
+*   **Sampling Variance:** Deterministic decoding may hide content variability, while sampling decoding better reflects interactive usage but requires fixed token limits to be comparable.
+
+### 4. Reproducibility Implications
+The document stresses that **transparency over abstraction** is the core goal of the framework:
+*   **Metadata as Evidence:** Hardware labels (e.g., `cpu/ryzen5600`) are merely paths; true reproducibility requires storing **metadata** (RAM capacity, GPU model, specific driver/version binaries, exact build options, runtime parameters).
+*   **No "Magic Numbers":** A single throughput figure cannot mask multiple causes (e.g., a slowdown might be due to a new backend build, a cache overflow, or thermal throttling). The framework demands recording the full tuple of configuration to allow for disentanglement.
+*   **Auditability:** The framework is designed so that any researcher can inspect a raw run, compare it against the parsed CSV, and verify the parsing logic. This prevents "black box" results where performance is attributed to hardware when it was actually due to a configuration mismatch.
+*   **Version Control:** Prompts, model files, and build versions must be version-controlled or hashed to detect accidental edits during the project lifecycle.
+
+[ Prompt: 17.5 t/s | Generation: 6.0 t/s ]
+
+
+Exiting...

@@ -1,0 +1,268 @@
+warning: no usable GPU found, --gpu-layers option will be ignored
+warning: one possible reason is that llama.cpp was compiled without GPU support
+warning: consult docs/build.md for compilation instructions
+
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b10110-8f5ab832c
+model      : /home/dilusha/llm-research/models/Qwen/Qwen3.5-2B-GGUF/Qwen3.5-2B-Q4_K_M.gguf
+ftype      : Q4_K - Medium
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> You are reviewing production-quality Python for an inference benchmark. Implement the function below in Python using only the standard library.
+
+Task:
+Implement `summarize_decode_speeds(lines)` where `lines` is an iterable of strings. Return a dictionary with exactly these keys:
+
+* `count`: number of valid decode records
+* `min_tps`: minimum valid tps, or `None` when there are no valid records
+* `max_tps`: maximum valid tps, or `None` when there are no valid records
+* `avg_tps`: arithmetic mean  ... (truncated)
+```python
+from typing import Iterable, Dict, Union
+
+def _is_finite_positive(value: float) -> bool:
+    """Check if a float is a finite, strictly positive number."""
+    return not (value != value and value != float('inf')) and value > 0
+
+
+def _parse_tps(token: str) -> Union[float, None]:
+    """
+    Parse a token like '100ms' or '500000' into a float.
+    Returns None if parsing fails or if the value is not a finite positive number.
+    """
+    # Strip whitespace and split on whitespace
+    parts = token.split()
+    if not parts:
+        return None
+
+    raw_value = parts[-1]  # Assume last part is the numeric string
+    try:
+        parsed = float(raw_value)
+    except ValueError:
+        return None
+
+    if not _is_finite_positive(parsed):
+        return None
+
+    # Ensure the value is a valid finite float (already handled by is_finite_positive)
+    return parsed
+
+
+def summarize_decode_speeds(lines: Iterable[str]) -> Dict[str, float]:
+    """
+    Summarize decode speed from a list of lines containing 'event=decode' and 'tps=<value>'.
+
+    Returns:
+        {
+            'count': int,
+            'min_tps': float | None,
+            'max_tps': float | None,
+            'avg_tps': float | None
+        }
+    """
+    # Initialize summary with None values
+    count = 0
+    min_tps = None
+    max_tps = None
+
+    for token in lines:
+        # Ignore non-string items
+        if not isinstance(token, str):
+            continue
+
+        # Split on whitespace
+        parts = token.split()
+        if not parts:
+            continue
+
+        # Check for event=decode
+        has_decode_event = False
+        tps_token = None
+
+        for part in parts:
+            if part == 'event' and len(parts) > 1 and parts[1] == 'decode':
+                has_decode_event = True
+
+        if not has_decode_event:
+            continue
+
+        # Locate 'tps=' in the rest of the tokens
+        tps_found = False
+        for i, part in enumerate(parts[1:], start=1):
+            if part.startswith('tps='):
+                tps_token = part
+                tps_found = True
+                break
+
+        if not tps_found:
+            continue
+
+        # Parse the tps value
+        tps = _parse_tps(tps_token)
+        if tps is None:
+            continue
+
+        # Only count if tps is strictly positive
+        if not tps > 0:
+            continue
+
+        count += 1
+        if min_tps is None or tps < min_tps:
+            min_tps = tps
+        if max_tps is None or tps > max_tps:
+            max_tps = tps
+
+    avg_tps = None
+    if count > 0:
+        avg_tps = sum_tps(count, min_tps, max_tps)
+
+    return {
+        'count': count,
+        'min_tps': min_tps,
+        'max_tps': max_tps,
+        'avg_tps': avg_tps
+    }
+
+
+def sum_tps(count: int, min_tps: float, max_tps: float) -> float:
+    """
+    Calculate average TPS.
+    Returns None if there are no valid records.
+    """
+    if count == 0:
+        return None
+    return (min_tps + max_tps) / 2
+
+
+def demonstrate():
+    """
+    Demonstration of the function with various edge cases.
+    """
+
+    # Helper to create a test case string
+    def make_case(name: str, tokens: list) -> str:
+        return ' '.join(tokens)
+
+    # 1. Valid record with simple tps
+    case1 = make_case(
+        "Valid record 1",
+        ["event=decode", "tps=100ms", "more data"]
+    )
+
+    # 2. Another key=value field (not decode)
+    case2 = make_case(
+        "Another key=value",
+        ["event=other", "tps=200", "key=value"]
+    )
+
+    # 3. Non-decode event
+    case3 = make_case(
+        "Non-decode event",
+        ["event=warning", "tps=50", "some text"]
+    )
+
+    # 4. Malformed float (negative)
+    case4 = make_case(
+        "Malformed float (negative)",
+        ["event=decode", "tps=-50", "text"]
+    )
+
+    # 5. Malformed float (nan)
+    case5 = make_case(
+        "Malformed float (nan)",
+        ["event=decode", "tps=nan", "text"]
+    )
+
+    # 6. Duplicate key with same value (malformed)
+    case6 = make_case(
+        "Duplicate tps value",
+        ["event=decode", "tps=100ms", "tps=100ms", "more"]
+    )
+
+    # 7. Non-string item (ignore)
+    case7 = make_case(
+        "Non-string item",
+        ["event=decode", "tps=300", "text", 123, "another", "another text"]
+    )
+
+    # 8. Valid record with rounded tps (e.g., 100.5)
+    case8 = make_case(
+        "Valid record with rounded tps",
+        ["event=decode", "tps=100.5ms", "data"]
+    )
+
+    # Collect results
+    result = summarize_decode_speeds([case1, case2, case3, case4, case5, case6, case7, case8])
+
+    # Expected summary
+    print("Demonstration Results:")
+    print(f"{'Case':<30} {'Tokens':<50} {'Summary':<20}")
+    print("-" * 100)
+    for i, case in enumerate([case1, case2, case3, case4, case5, case6, case7, case8], 1):
+        tokens = [str(token) for token in case]
+        summary = result[summary_decode_speeds(case)[key] for key in result if key in result]
+        print(f"{i:<30} {tokens:<50} {summary:<20}")
+
+    print("\nExpected Summary:")
+    print(f"count: 8")
+    print(f"min_tps: 100.0")
+    print(f"max_tps: 300.0")
+    print(f"avg_tps: 190.0")
+
+    # Focused assertions for common incorrect implementations
+    # Note: These assertions are for verification, not part of the function itself.
+    # If an implementation is incorrect, these will fail.
+    try:
+        assert summarize_decode_speeds([case1])['count'] == 1, "Should count valid decode records."
+    except AssertionError:
+        print("Assertion failed: count not 1 for case1")
+
+    try:
+        assert summarize_decode_speeds([case2])['count'] == 1, "Should count non-decode events correctly."
+    except AssertionError:
+        print("Assertion failed: count not 1 for case2 (non-decode should be ignored)")
+
+    try:
+        assert summarize_decode_speeds([case4])['count'] == 0, "Should skip negative tps."
+    except AssertionError:
+        print("Assertion failed: count not 0 for case4 (negative tps should be skipped)")
+
+    try:
+        assert summarize_decode_speeds([case5])['count'] == 0, "Should skip nan tps."
+    except AssertionError:
+        print("Assertion failed: count not 0 for case5 (nan tps should be skipped)")
+
+    try:
+        # Duplicate key with same value should be malformed (ignored)
+        assert summarize_decode_speeds([case6])['count'] == 1, "Duplicate tps value should be malformed."
+    except AssertionError:
+        print("Assertion failed: count not 1 for case6 (duplicate tps should be malformed)")
+
+
+if __name__ == "__main__":
+    demonstrate()
+```
+
+[ Prompt: 18.0 t/s | Generation: 6.5 t/s ]
+
+
+Exiting...
