@@ -19,7 +19,23 @@ QUALITY_SOURCE_COLUMNS = {
     "Notes": "comments",
 }
 MERGE_KEYS = ("hardware", "model", "workload")
-DERIVED_COLUMNS = ["experiment_category", "model_size_b", "architecture", "quantization"]
+DERIVED_COLUMNS = [
+    "experiment_category", "model_size_b", "architecture", "quantization",
+    "model_family", "active_parameters_b",
+]
+MODEL_FAMILY = {
+    "Qwen3.5-0.8B": "Qwen3.5", "Qwen3.5-2B": "Qwen3.5",
+    "Qwen3.5-4B": "Qwen3.5", "Qwen3.5-9B": "Qwen3.5",
+    "Qwen3.6-27B": "Qwen3.6", "Qwen3.6-35B-A3B": "Qwen3.6",
+    "Gemma4-E2B": "Gemma4", "gemma-4-E2B-it": "Gemma4",
+    "Gemma4-12B": "Gemma4", "gemma-4-12B-it-QAT": "Gemma4",
+    "Gemma4-26B-A4B": "Gemma4", "gemma-4-26B-A4B-it": "Gemma4",
+}
+ACTIVE_PARAMETERS_B = {
+    "Qwen3.6-35B-A3B": "3",
+    "Gemma4-E2B": "2", "gemma-4-E2B-it": "2",
+    "Gemma4-26B-A4B": "4", "gemma-4-26B-A4B-it": "4",
+}
 
 # Includes both the canonical names from the analysis specification and the
 # model names currently used in benchmark-results.csv.
@@ -123,21 +139,32 @@ def classify_experiment(row: dict[str, str]) -> str:
     return "unknown"
 
 
-def add_derived_columns(rows: list[dict[str, str]]) -> tuple[list[dict[str, str]], list[str]]:
+def add_derived_columns(rows: list[dict[str, str]]) -> tuple[list[dict[str, str]], list[str], list[str]]:
     missing_metadata = sorted({
         clean(row.get("model"))
         for row in rows
         if clean(row.get("model")) not in MODEL_METADATA
     })
+    missing_active_parameters = sorted({
+        clean(row.get("model"))
+        for row in rows
+        if not (
+            ACTIVE_PARAMETERS_B.get(clean(row.get("model")))
+            or MODEL_METADATA.get(clean(row.get("model")), {}).get("model_size_b")
+        )
+    })
     derived_rows = []
     for row in rows:
-        metadata = MODEL_METADATA.get(clean(row.get("model")), {})
+        model = clean(row.get("model"))
+        metadata = MODEL_METADATA.get(model, {})
         derived = dict(row)
         derived["experiment_category"] = classify_experiment(row)
-        for column in DERIVED_COLUMNS[1:]:
+        for column in ("model_size_b", "architecture", "quantization"):
             derived[column] = metadata.get(column, "")
+        derived["model_family"] = MODEL_FAMILY.get(model, "")
+        derived["active_parameters_b"] = ACTIVE_PARAMETERS_B.get(model, metadata.get("model_size_b", ""))
         derived_rows.append(derived)
-    return derived_rows, missing_metadata
+    return derived_rows, missing_metadata, missing_active_parameters
 
 
 def build_dataset(root: Path) -> None:
@@ -157,12 +184,19 @@ def build_dataset(root: Path) -> None:
         raise ValueError("Quality data contains duplicate merge keys; merge would be ambiguous")
 
     write_csv(processed_root / "quality-results.csv", quality_rows, QUALITY_COLUMNS)
-    derived_rows, missing_metadata = add_derived_columns(benchmark_rows)
+    derived_rows, missing_metadata, missing_active_parameters = add_derived_columns(benchmark_rows)
     print("Experiment category distribution:")
     for category, count in sorted(Counter(row["experiment_category"] for row in derived_rows).items()):
         print(f"  {category}: {count}")
+    print(f"Unique model_family values: {sorted({row["model_family"] for row in derived_rows})}")
+    empty_families = [row for row in derived_rows if not row["model_family"]]
+    if empty_families:
+        raise ValueError("Rows have empty model_family")
     print(f"Models missing metadata: {len(missing_metadata)}")
     for model in missing_metadata:
+        print(f"  {model}")
+    print(f"Models missing active_parameters_b: {len(missing_active_parameters)}")
+    for model in missing_active_parameters:
         print(f"  {model}")
 
     # The benchmark columns and values are copied unchanged; derived and
