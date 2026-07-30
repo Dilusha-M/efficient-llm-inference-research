@@ -1,0 +1,7 @@
+workload,hardware,model,suitability,overall_score,decode_tps,time_to_first_token,memory_usage_mb
+agentic,rtx2060-12gb,Qwen3.5-9B,Suitable,5.0,48.73333333333333,2.528157333333333,5348.0
+batch,rtx2060-12gb,Qwen3.5-9B,Suitable,5.0,48.76666666666667,2.504049,5348.0
+chat,gtx1660-super-6gb,Qwen3.5-9B,Suitable,5.0,41.63333333333333,6.124971666666667,5188.0
+coding,rtx2060-12gb,Qwen3.5-9B,Suitable,5.0,48.9,2.404174,5344.0
+summarization,rtx2060-12gb,Qwen3.5-9B,Suitable,5.0,48.56666666666666,4.333381666666667,5346.0
+world_knowledge,rtx2060-12gb,Qwen3.5-9B,Suitable,5.0,49.63333333333333,2.5103093333333333,5348.0
