@@ -9,11 +9,11 @@ BASE="$HOME/llm-research"
 # ==========================
 
 BACKEND="cpu"
-HARDWARE="G3250"
+HARDWARE="i5-8265U"
 MODEL="QWEN35_0_8B"
 # Select the llama.cpp CPU build. Override with LLAMA_CPU_BUILD=build-cpu
 # when benchmarking an AVX-capable CPU.
-CPU_BUILD="${LLAMA_CPU_BUILD:-build-cpu-sse42}"
+CPU_BUILD="${LLAMA_CPU_BUILD:-build-cpu}"
 RUNS=3
 GPU_LAYERS=999
 # CUDA-only MoE CPU offload. Leave empty for ordinary layer offloading.
