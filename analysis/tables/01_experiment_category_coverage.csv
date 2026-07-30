@@ -1,0 +1,5 @@
+experiment_category,executions,successful
+cpu_only,252,252
+gpu_full_offload,270,270
+gpu_moe_offload,72,69
+gpu_partial_offload,36,36

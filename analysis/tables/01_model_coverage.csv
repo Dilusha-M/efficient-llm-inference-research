@@ -1,0 +1,10 @@
+model,executions,hardware,workloads,successful,model_size_b,architecture,quantization
+Qwen3.5-0.8B,126,7,6,126,0.8,dense,Q8_0
+Qwen3.5-2B,108,6,6,108,2.0,dense,Q4_K_M
+Qwen3.5-4B,108,6,6,108,4.0,dense,Q4_K_M
+Qwen3.5-9B,54,3,6,54,9.0,dense,Q4_K_M
+Qwen3.6-27B,18,1,6,18,27.0,dense,Q4_K_M
+Qwen3.6-35B-A3B,36,2,6,36,35.0,MoE,Q4_K_M
+gemma-4-12B-it-QAT,36,2,6,36,12.0,dense,Q4_0
+gemma-4-26B-A4B-it,36,2,6,33,26.0,MoE,Q4_K_M
+gemma-4-E2B-it,108,6,6,108,2.0,MoE,Q4_K_M

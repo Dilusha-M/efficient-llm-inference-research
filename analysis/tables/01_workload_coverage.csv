@@ -1,0 +1,7 @@
+workload,executions,hardware,models,successful
+agentic,105,7,9,105
+batch,105,7,9,105
+chat,105,7,9,105
+coding,105,7,9,105
+summarization,105,7,9,102
+world_knowledge,105,7,9,105
