@@ -1,0 +1,25 @@
+Model,Workload,Accuracy,Completeness,Correctness,Usefulness,Overall Score,Notes
+Qwen3.5-0.8B,chat,3,3,3,3,3,"Provides correct basic responses and follows instructions, but limited reasoning depth compared with larger models."
+Qwen3.5-0.8B,coding,3,3,3,3,3,Handles simple coding requests but struggles with complex implementation details and larger reasoning tasks.
+Qwen3.5-0.8B,summarization,3,3,3,3,3,Captures main points but loses details and deeper context.
+Qwen3.5-0.8B,batch,3,3,3,3,3,Completes simple multi-task requests but consistency decreases with complexity.
+Qwen3.5-0.8B,agentic,3,3,3,3,3,Can follow basic multi-step instructions but limited planning capability.
+Qwen3.5-0.8B,world_knowledge,3,3,3,3,3,Answers common knowledge questions but lacks depth for harder queries.
+Qwen3.5-2B,chat,4,4,4,4,4,Improved consistency and response quality compared with the smaller model.
+Qwen3.5-2B,coding,3,4,3,3,3.25,Produces useful simple code but struggles with complex debugging and architecture decisions.
+Qwen3.5-2B,summarization,4,4,4,4,4,Provides better information retention and structure than the smaller model.
+Qwen3.5-2B,batch,4,4,4,4,4,Handles multiple simple requests with acceptable consistency.
+Qwen3.5-2B,agentic,3,4,3,3,3.25,Can follow short workflows but complex planning remains limited.
+Qwen3.5-2B,world_knowledge,4,4,4,4,4,Provides generally reliable answers for common knowledge questions.
+Qwen3.5-4B,chat,4,4,4,4,4,Provides coherent responses with stronger reasoning and consistency.
+Qwen3.5-4B,coding,4,4,4,4,4,Produces practical solutions for common programming tasks.
+Qwen3.5-4B,summarization,4,4,4,4,4,Maintains key information with improved detail preservation.
+Qwen3.5-4B,batch,4,4,4,4,4,Handles multiple requests reliably.
+Qwen3.5-4B,agentic,4,4,4,4,4,Shows improved instruction following for multi-step tasks.
+Qwen3.5-4B,world_knowledge,4,4,4,4,4,Provides useful general knowledge responses with good accuracy.
+gemma-4-E2B-it,chat,4,4,4,4,4,Provides strong conversational quality for its compact size.
+gemma-4-E2B-it,coding,4,4,4,4,4,Produces useful code explanations and solutions for common tasks.
+gemma-4-E2B-it,summarization,4,4,4,4,4,Produces concise summaries with good information preservation.
+gemma-4-E2B-it,batch,4,4,4,4,4,Maintains good consistency across repeated structured tasks.
+gemma-4-E2B-it,agentic,4,4,4,4,4,Handles structured workflows reasonably well.
+gemma-4-E2B-it,world_knowledge,4,4,4,4,4,Provides reliable answers for common knowledge tasks.
