@@ -10,7 +10,7 @@ BASE="$HOME/llm-research"
 
 BACKEND="cpu"
 HARDWARE="i5-8265U"
-MODEL="GEMMA4_E2B"
+MODEL="QWEN35_4B"
 # Select the llama.cpp CPU build. Override with LLAMA_CPU_BUILD=build-cpu
 # when benchmarking an AVX-capable CPU.
 CPU_BUILD="${LLAMA_CPU_BUILD:-build-cpu}"
