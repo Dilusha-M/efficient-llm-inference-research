@@ -1,0 +1,10 @@
+model,model_size_b,active_parameters_b,architecture,model_family,quantization,workloads,hardware
+Qwen3.5-0.8B,0.8,0.8,dense,Qwen3.5,Q8_0,6,7
+Qwen3.5-2B,2.0,2.0,dense,Qwen3.5,Q4_K_M,6,6
+Qwen3.5-4B,4.0,4.0,dense,Qwen3.5,Q4_K_M,6,6
+Qwen3.5-9B,9.0,9.0,dense,Qwen3.5,Q4_K_M,6,3
+Qwen3.6-27B,27.0,27.0,dense,Qwen3.6,Q4_K_M,6,1
+Qwen3.6-35B-A3B,35.0,3.0,MoE,Qwen3.6,Q4_K_M,6,2
+gemma-4-12B-it-QAT,12.0,12.0,dense,Gemma4,Q4_0,6,2
+gemma-4-26B-A4B-it,26.0,4.0,MoE,Gemma4,Q4_K_M,6,2
+gemma-4-E2B-it,2.0,2.0,MoE,Gemma4,Q4_K_M,6,6

@@ -1,0 +1,4 @@
+model,active_parameters_b,model_size_b,decode_tps
+Qwen3.6-35B-A3B,3.0,35.0,35.25
+gemma-4-26B-A4B-it,4.0,26.0,28.912121212121214
+gemma-4-E2B-it,2.0,2.0,49.661111111111104
