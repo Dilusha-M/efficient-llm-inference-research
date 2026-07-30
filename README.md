@@ -86,3 +86,21 @@ Stability:
 - error message in metadata when a run fails
 
 `experiments/scripts/parse_results.py` converts raw run artifacts into the processed CSV format at `results/processed/benchmark-results.csv`. If the target CSV already exists, direct parser runs write a timestamped CSV unless `--overwrite` is supplied.
+
+## Build the final analysis dataset
+
+`experiments/scripts/build_analysis_dataset.py` combines run-level benchmark results with manual quality evaluations. It recursively discovers every `results/quality/**/quality_evaluation.csv`, derives hardware from each file's parent directory, normalizes quality columns, and left-merges on `hardware`, `model`, and `workload`.
+
+From the repository root, run:
+
+```bash
+python3 experiments/scripts/build_analysis_dataset.py
+```
+
+The script prints row counts, duplicate merge keys, and unmatched benchmark rows. It writes `results/processed/quality-results.csv` and `results/processed/final-analysis-dataset.csv`. The benchmark input is read only and is never modified.
+
+To run it from another working directory, pass the repository path explicitly:
+
+```bash
+python3 /path/to/llm-research/experiments/scripts/build_analysis_dataset.py --root /path/to/llm-research
+```
